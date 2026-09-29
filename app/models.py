@@ -153,7 +153,8 @@ class Cart(TimestampMixin, Base):
 
     user: Mapped[User] = relationship(back_populates="carts")
     items: Mapped[list[CartItem]] = relationship(
-        back_populates="cart", cascade="all, delete-orphan", lazy="selectin"
+        back_populates="cart", cascade="all, delete-orphan", lazy="selectin",
+        order_by="CartItem.id",
     )
 
 
@@ -201,7 +202,8 @@ class Order(TimestampMixin, Base):
     event: Mapped[Event] = relationship(back_populates="orders", lazy="joined")
     user: Mapped[User] = relationship(back_populates="orders", lazy="joined")
     items: Mapped[list[OrderItem]] = relationship(
-        back_populates="order", cascade="all, delete-orphan", lazy="selectin"
+        back_populates="order", cascade="all, delete-orphan", lazy="selectin",
+        order_by="OrderItem.id",
     )
     history: Mapped[list[OrderStatusHistory]] = relationship(
         back_populates="order", cascade="all, delete-orphan", lazy="selectin"

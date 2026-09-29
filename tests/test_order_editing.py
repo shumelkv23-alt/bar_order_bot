@@ -72,6 +72,35 @@ async def test_cart_quantity_update_and_delete_are_optimistic(session) -> None:
     assert not (await get_cart(session, user.id, event.id)).items
 
 
+async def test_cart_lines_keep_added_order_after_quantity_change(session) -> None:
+    user, event, entries = await guest_and_menu(session)
+    chosen = entries[:3]
+    for entry in chosen:
+        await add_to_cart(session, user.id, event.id, entry.menu_item_id, 1)
+    original = await get_cart(session, user.id, event.id)
+    ids = [item.id for item in original.items]
+    assert len(ids) == 3
+
+    await update_cart_item_quantity(session, user.id, ids[0], 2, expected_quantity=1)
+    await update_cart_item_quantity(session, user.id, ids[1], 2, expected_quantity=1)
+    updated = await get_cart(session, user.id, event.id)
+    assert [item.id for item in updated.items] == ids
+    assert [item.quantity for item in updated.items] == [2, 2, 1]
+
+    order = await submit_cart(session, user.id, event.id)
+    reloaded = await get_order(session, order.id)
+    expected_menu_ids = [entry.menu_item_id for entry in chosen]
+    assert [item.menu_item_id for item in reloaded.items] == expected_menu_ids
+    _, restored = await reopen_order_for_edit(
+        session,
+        order.id,
+        user.id,
+        expected_version=order.version,
+        actor="guest:101",
+    )
+    assert [item.menu_item_id for item in restored.items] == expected_menu_ids
+
+
 async def test_reopen_submitted_order_merges_matching_cart_lines(session) -> None:
     user, event, entries = await guest_and_menu(session)
     menu_item_id = entries[0].menu_item_id
