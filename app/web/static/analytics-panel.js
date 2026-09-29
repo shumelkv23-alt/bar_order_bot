@@ -1,6 +1,6 @@
 (() => {
   const {$,esc,request,notify} = Panel;
-  const statuses={submitted:'Новые',accepted:'Приняты',preparing:'Готовятся',ready:'Готовы',completed:'Выданы',cancelled:'Отменены',rejected:'Отклонены'};
+  const statuses={submitted:'Новые',accepted:'Приняты',preparing:'Готовятся',ready:'Готовы',completed:'Закрыты',cancelled:'Отменены',rejected:'Отклонены'};
   let events=[],summary=null,revision=0,timer,loading=false;
   function clear(message) { summary=null;$('#csv').disabled=true;$('#json').disabled=true;$('#metrics').querySelectorAll('strong').forEach(node=>node.textContent='—');['timeline','popular','statuses'].forEach(id=>$('#'+id).innerHTML=`<p class="empty">${esc(message)}</p>`);$('#timeline-table').innerHTML='';$('#extra-metrics').textContent=''; }
   // Continuous hours, including quiet hours. Long events use daily buckets.
@@ -27,7 +27,7 @@
     $('#timeline').innerHTML=points.length?points.map(point=>`<div class="timeline-point"><b>${point.orders}</b><i style="height:${point.orders/maxHour*120}px" aria-hidden="true"></i><span>${esc(label(point.time))}</span></div>`).join(''):'<p class="empty">Пока нет заказов — график появится после первого.</p>';
     $('#timeline-table').innerHTML=points.map(point=>`<tr><td>${esc(new Date(point.time).toLocaleString('ru-RU'))}</td><td>${point.orders}</td></tr>`).join('');
     $('#timeline-caption').textContent=daily?'Длительное мероприятие: группировка по календарным дням в часовом поясе устройства.':'Время в часовом поясе устройства. Нулевые часы между первым и последним заказами сохранены.';
-    $('#extra-metrics').textContent=`Выдано: ${summary.completed_orders} · Отменено и отклонено: ${summary.cancelled_orders} · Средний заказ: ${summary.total_orders?summary.average_items_per_order:'—'} ед.`;
+    $('#extra-metrics').textContent=`Выдано: ${summary.completed_orders} · Закрыто таймером без подтверждения: ${summary.auto_closed_orders} · Отменено и отклонено: ${summary.cancelled_orders} · Средний заказ: ${summary.total_orders?summary.average_items_per_order:'—'} ед.`;
     $('#csv').disabled=false;$('#json').disabled=false;
   }
   async function loadSummary(changed=false) {

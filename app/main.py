@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
@@ -21,6 +22,7 @@ from app.bot.handlers import router as bot_router
 from app.config import get_settings
 from app.db import async_session_factory, engine
 from app.logging_config import configure_logging
+from app.services.auto_progress import auto_progress_loop
 from app.services.seed import seed_demo_data
 
 settings = get_settings()
@@ -63,7 +65,16 @@ async def lifespan(app: FastAPI):
                 secret_token=settings.webhook_secret,
                 allowed_updates=dispatcher.resolve_used_update_types(),
             )
-    yield
+    auto_task = None
+    if settings.auto_progress_enabled:
+        auto_task = asyncio.create_task(auto_progress_loop(async_session_factory, app.state.bot))
+    try:
+        yield
+    finally:
+        if auto_task:
+            auto_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await auto_task
     if app.state.bot:
         await app.state.bot.session.close()
     await engine.dispose()

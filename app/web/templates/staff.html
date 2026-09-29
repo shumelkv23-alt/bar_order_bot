@@ -9,8 +9,10 @@
 {% block content %}
   <div class="event-strip"><div>{{ icon('calendar') }}<strong id="event-name">Загружаем мероприятие…</strong><span id="event-state" class="badge"></span></div><p class="queue-legend" id="queue-legend">Время с момента заказа</p></div>
   <div class="queue-filter"><div class="segmented" aria-label="Показать статус"><button data-filter="all" aria-pressed="true">Все <span id="total-count"></span></button><button data-filter="submitted" aria-pressed="false">Новые</button><button data-filter="accepted" aria-pressed="false">Принятые</button><button data-filter="preparing" aria-pressed="false">Готовятся</button><button data-filter="ready" aria-pressed="false">Готовы</button></div></div>
+  <section id="prep-zone" class="prep-zone" hidden><h2>Приготовить вместе</h2><p>Совпадают напиток, добавки и комментарий. Сверьте номера перед выдачей.</p><div id="prep-list" class="prep-list"></div></section>
   <div id="queue-status" class="visually-hidden" role="status"></div>
   <div id="board" class="board" aria-busy="true"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>
+  <section id="auto-closed-zone" class="prep-zone" hidden><h2>Закрыты таймером — проверьте выдачу</h2><p>Эти заказы остаются здесь, пока сотрудник не подтвердит фактическую выдачу.</p><div id="auto-closed-list" class="prep-list"></div></section>
   <details id="special-zone" class="special-zone" hidden><summary>Особые запросы <span class="badge orange" id="special-count"></span></summary><p class="muted">Запросы вне меню. Подтвердите возможность приготовления или предложите гостю альтернативу.</p><div id="special-list" class="special-list"></div></details>
 {% endblock %}
-{% block scripts %}<script src="/static/staff-panel.js?v=2" defer></script>{% endblock %}
+{% block scripts %}<script src="/static/staff-panel.js?v=4" defer></script>{% endblock %}

@@ -88,6 +88,14 @@ button.primary:hover, .button-link.primary:hover { background: var(--blue-hover)
 .special-recipe a { color: var(--blue); }
 .order-comment { border-left-color: var(--orange); background: #fff5ee; }
 .special-zone summary::before { color: var(--orange); }
+.prep-zone { margin: 0 0 20px; padding: 16px 18px; background: #eaf5f3; border: 1px solid #b9ddd7; border-radius: 10px; }
+.prep-zone h2 { font-size: 17px; margin: 0 0 4px; }
+.prep-zone > p { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
+.prep-list { display: flex; flex-wrap: wrap; gap: 10px; }
+.prep-batch { display: grid; gap: 4px; min-width: 220px; padding: 12px; background: #fff; border-radius: 8px; font-size: 13px; }
+.prep-batch span { color: var(--muted); font-size: 12px; }
+.prep-batch p { margin: 4px 0 0; color: var(--blue); font-weight: 700; }
+.auto-deadline { margin: 0 0 12px; color: var(--muted); font-size: 11px; }
 .metric strong, .rank-row strong { color: var(--blue); }
 .page-footer { border-top: 1px solid var(--border); margin-top: 32px; padding-top: 16px; }
 

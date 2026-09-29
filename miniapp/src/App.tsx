@@ -409,7 +409,7 @@ export function App() {
       </>}
 
       {screen === 'order' && order && <>
-        <div className="order-confirmation"><div className="confirmation-mark"><Icon name="check" size={30} /></div><p>{t.status}: {t[order.status as keyof typeof t] || order.status}</p><h2>{order.public_number}</h2></div>
+        <div className="order-confirmation"><div className="confirmation-mark"><Icon name="check" size={30} /></div><p>{t.status}: {order.completed_automatically ? t.autoCompleted : order.status_automatically && order.status === 'accepted' ? t.autoAccepted : order.status_automatically && order.status === 'preparing' ? t.autoPreparing : order.status_automatically && order.status === 'ready' ? t.autoReady : t[order.status as keyof typeof t] || order.status}</p><h2>{order.public_number}</h2></div>
         <div className="order-lines">{order.items.map((item, index) => <div key={`${item.name}-${index}`}><span>{item.name}{item.modifiers.length ? ` · ${item.modifiers.join(', ')}` : ''}</span><strong>×{item.quantity}</strong></div>)}</div>
         <button className="button button--secondary" onClick={() => setScreen('menu')}>{t.menu}</button>
       </>}

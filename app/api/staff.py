@@ -12,15 +12,17 @@ from app.config import get_settings
 from app.db import get_session
 from app.domain import Language, OrderStatus, SpecialRequestStatus
 from app.models import Event, Order, SpecialRequest
-from app.schemas import OrderStatusUpdate, SpecialRequestStatusUpdate
+from app.schemas import OrderCollectionConfirm, OrderStatusUpdate, SpecialRequestStatusUpdate
 from app.services.orders import (
     DomainError,
     analytics_summary,
     analytics_to_csv,
+    confirm_auto_closed_order,
     get_active_event,
     list_special_requests,
     list_staff_orders,
     order_to_dict,
+    prep_batches,
     special_request_to_dict,
     transition_order,
     transition_special_request,
@@ -171,6 +173,7 @@ async def staff_orders(
                 OrderStatus.PREPARING.value,
                 OrderStatus.READY.value,
             ],
+            include_auto_closed=True,
         )
         special_requests = await list_special_requests(
             session,
@@ -188,8 +191,10 @@ async def staff_orders(
             "warning_minutes": get_settings().staff_warning_minutes,
             "critical_minutes": get_settings().staff_critical_minutes,
             "poll_interval_ms": 2500,
+            "auto_progress_enabled": get_settings().auto_progress_enabled,
         },
         "orders": [order_to_dict(order) for order in orders],
+        "prep_batches": prep_batches(orders),
         "special_requests": [
             special_request_to_dict(request, request.user.language) for request in special_requests
         ],
@@ -269,6 +274,38 @@ async def update_order_status(
         except Exception as exc:
             # The status change must not roll back if Telegram is temporarily unavailable.
             logger.warning("Telegram status notification failed: %s", exc)
+    return order_to_dict(order)
+
+
+@router.post("/staff/orders/{order_id}/confirm-collection")
+async def confirm_collection(
+    order_id: int,
+    payload: OrderCollectionConfirm,
+    request: Request,
+    session: Session,
+    role: Annotated[str, Depends(require_staff)],
+) -> dict:
+    try:
+        order = await confirm_auto_closed_order(
+            session, order_id, actor=role, expected_version=payload.expected_version
+        )
+    except DomainError as exc:
+        raise domain_http_error(exc) from exc
+    bot: Bot | None = getattr(request.app.state, "bot", None)
+    language = Language.EN if order.user.language == Language.EN.value else Language.RU
+    if bot:
+        try:
+            await _notify_status(
+                session,
+                bot,
+                Order,
+                order.id,
+                OrderStatus.COMPLETED.value,
+                STATUS_MESSAGES[language][OrderStatus.COMPLETED].format(number=order.public_number),
+                expected_version=order.version,
+            )
+        except Exception as exc:
+            logger.warning("Telegram collection notification failed: %s", exc)
     return order_to_dict(order)
 
 

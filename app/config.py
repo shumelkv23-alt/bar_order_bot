@@ -43,6 +43,8 @@ class Settings(BaseSettings):
 
     staff_warning_minutes: int = Field(default=5, ge=1, le=120)
     staff_critical_minutes: int = Field(default=10, ge=2, le=240)
+    auto_progress_enabled: bool = True
+    auto_progress_poll_seconds: int = Field(default=10, ge=2, le=60)
 
     seed_demo: bool = True
     sql_echo: bool = False

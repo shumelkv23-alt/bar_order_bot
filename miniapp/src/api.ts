@@ -13,6 +13,7 @@ export type CartItem = {
 export type Cart = { id: number; event_id: number; items: CartItem[]; total_quantity: number }
 export type Order = {
   id: number; public_number: string; status: string; version: number; created_at: string
+  status_automatically: boolean; completed_automatically: boolean
   comment: string; items: { name: string; quantity: number; modifiers: string[]; comment: string }[]
   new_achievements?: string[]
 }

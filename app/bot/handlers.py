@@ -594,6 +594,24 @@ async def my_order(callback: CallbackQuery, state: FSMContext) -> None:
             payload = order_to_dict(order, user.language)
             lines = [f"• {item['quantity']} × {item['name']}" for item in payload["items"]]
             status_label = ORDER_STATUS_LABELS[user.language].get(order.status, order.status)
+            if order.status_automatically:
+                automatic_labels = {
+                    Language.RU.value: {
+                        OrderStatus.ACCEPTED.value: "в очереди бармена (автоматически)",
+                        OrderStatus.PREPARING.value: "расчётный этап приготовления",
+                        OrderStatus.READY.value: (
+                            "расчётное время прошло; уточните готовность у бармена"
+                        ),
+                    },
+                    Language.EN.value: {
+                        OrderStatus.ACCEPTED.value: "in bartender queue (automatic)",
+                        OrderStatus.PREPARING.value: "estimated preparation stage",
+                        OrderStatus.READY.value: (
+                            "estimated time passed; ask the bartender if ready"
+                        ),
+                    },
+                }
+                status_label = automatic_labels[user.language].get(order.status, status_label)
             status_title = "Status" if user.language == Language.EN.value else "Статус"
             text = f"<b>{order.public_number}</b>\n{status_title}: {status_label}\n\n" + "\n".join(
                 lines

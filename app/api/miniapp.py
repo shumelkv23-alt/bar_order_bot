@@ -244,6 +244,8 @@ def _order_view(order: Order, language: str) -> dict:
         "id": order.id,
         "public_number": order.public_number,
         "status": order.status,
+        "status_automatically": order.status_automatically,
+        "completed_automatically": order.completed_automatically,
         "version": order.version,
         "created_at": order.created_at.isoformat(),
         "comment": order.comment,

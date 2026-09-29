@@ -41,6 +41,10 @@ class OrderStatusUpdate(BaseModel):
     reason: str = Field(default="", max_length=300)
 
 
+class OrderCollectionConfirm(BaseModel):
+    expected_version: int = Field(ge=1)
+
+
 class SpecialRequestStatusUpdate(BaseModel):
     status: SpecialRequestStatus
     note: str = Field(default="", max_length=300)

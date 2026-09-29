@@ -5,10 +5,11 @@ from datetime import UTC, datetime
 from io import StringIO
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config import get_settings
 from app.domain import (
     ACTIVE_ORDER_STATUSES,
     EventStatus,
@@ -33,6 +34,7 @@ from app.models import (
     User,
 )
 from app.services.achievements import award_achievement
+from app.services.auto_progress_policy import stage_delay
 from app.services.cocktail_recipes import RecipeProposal
 from app.services.secret_menu import (
     offer_available,
@@ -689,6 +691,18 @@ async def submit_cart(
     )
     session.add(order)
     cart.items.clear()
+    if get_settings().auto_progress_enabled:
+        await session.flush()
+        queue_size = await session.scalar(
+            select(func.count(Order.id)).where(
+                Order.event_id == event_id,
+                Order.status.in_([status.value for status in ACTIVE_ORDER_STATUSES]),
+            )
+        )
+        order.auto_queue_size_snapshot = int(queue_size or 1)
+        order.next_transition_at = utc_now() + stage_delay(
+            order.status, order.auto_queue_size_snapshot, sum(item.quantity for item in order.items)
+        )
     new_achievements = []
     if has_prior_order is None:
         if await award_achievement(session, event_id, user_id, "first_contact"):
@@ -710,7 +724,7 @@ async def get_order(
         .options(selectinload(Order.items), selectinload(Order.history))
     )
     if for_update:
-        statement = statement.with_for_update(of=Order)
+        statement = statement.with_for_update(of=Order).execution_options(populate_existing=True)
     order = await session.scalar(statement)
     if not order:
         raise NotFoundError("Заказ не найден")
@@ -809,6 +823,7 @@ async def reopen_order_for_edit(
     order.status = OrderStatus.CANCELLED.value
     order.version += 1
     order.cancelled_at = utc_now()
+    order.next_transition_at = None
     order.history.append(
         OrderStatusHistory(
             from_status=previous,
@@ -852,6 +867,8 @@ async def list_staff_orders(
     session: AsyncSession,
     event_id: int,
     statuses: list[str] | None = None,
+    *,
+    include_auto_closed: bool = False,
 ) -> list[Order]:
     statement = (
         select(Order)
@@ -860,8 +877,60 @@ async def list_staff_orders(
         .order_by(Order.created_at.asc(), Order.id.asc())
     )
     if statuses:
-        statement = statement.where(Order.status.in_(statuses))
+        condition = Order.status.in_(statuses)
+        if include_auto_closed:
+            condition = or_(condition, Order.completed_automatically.is_(True))
+        statement = statement.where(condition)
     return list((await session.scalars(statement)).unique().all())
+
+
+def prep_batches(orders: list[Order]) -> list[dict[str, Any]]:
+    groups: dict[tuple, dict[str, Any]] = {}
+    for order in orders:
+        if order.status not in {
+            OrderStatus.SUBMITTED.value,
+            OrderStatus.ACCEPTED.value,
+            OrderStatus.PREPARING.value,
+        }:
+            continue
+        for item in order.items:
+            if item.menu_item_id is None:
+                continue
+            modifier_ids = tuple(sorted(str(row.get("id")) for row in item.modifiers_snapshot))
+            key = (item.menu_item_id, modifier_ids, item.comment.strip(), order.comment.strip())
+            batch = groups.setdefault(
+                key,
+                {
+                    "name": item.name_ru_snapshot,
+                    "menu_item_id": item.menu_item_id,
+                    "modifiers": [row.get("name_ru", "") for row in item.modifiers_snapshot],
+                    "comment": item.comment,
+                    "order_comment": order.comment,
+                    "quantity": 0,
+                    "orders": [],
+                    "first_created_at": order.created_at.isoformat(),
+                },
+            )
+            batch["quantity"] += item.quantity
+            existing = next((row for row in batch["orders"] if row["id"] == order.id), None)
+            if existing:
+                existing["quantity"] += item.quantity
+            else:
+                batch["orders"].append(
+                    {
+                        "id": order.id,
+                        "number": order.public_number,
+                        "quantity": item.quantity,
+                        "status": order.status,
+                    }
+                )
+    batches = [
+        batch
+        for batch in groups.values()
+        if len({row["id"] for row in batch["orders"]}) >= 2
+    ]
+    batches.sort(key=lambda batch: (-batch["quantity"], batch["first_created_at"]))
+    return batches
 
 
 async def transition_order(
@@ -890,8 +959,25 @@ async def transition_order(
             if item.secret_offer_id:
                 await release_portions(session, item.secret_offer_id, item.quantity)
     order.status = target.value
+    order.status_automatically = actor == "system:auto"
     order.version += 1
     now = utc_now()
+    if target in ACTIVE_ORDER_STATUSES and get_settings().auto_progress_enabled:
+        await session.flush()
+        queue_size = await session.scalar(
+            select(func.count(Order.id)).where(
+                Order.event_id == order.event_id,
+                Order.status.in_([status.value for status in ACTIVE_ORDER_STATUSES]),
+            )
+        )
+        order.auto_queue_size_snapshot = int(queue_size or 1)
+        order.next_transition_at = now + stage_delay(
+            target.value, order.auto_queue_size_snapshot, sum(item.quantity for item in order.items)
+        )
+    else:
+        order.next_transition_at = None
+    if target == OrderStatus.COMPLETED:
+        order.completed_automatically = actor == "system:auto"
     timestamps = {
         OrderStatus.ACCEPTED: "accepted_at",
         OrderStatus.PREPARING: "preparing_at",
@@ -909,6 +995,35 @@ async def transition_order(
             entity_type="order",
             entity_id=str(order.id),
             payload={"from": previous, "to": target.value, "reason": reason},
+        )
+    )
+    await session.commit()
+    return await get_order(session, order.id)
+
+
+async def confirm_auto_closed_order(
+    session: AsyncSession,
+    order_id: int,
+    *,
+    actor: str,
+    expected_version: int,
+) -> Order:
+    order = await get_order(session, order_id, for_update=True)
+    if order.version != expected_version:
+        raise ConflictError("Заказ уже изменился. Обновите очередь и повторите действие")
+    if order.status != OrderStatus.COMPLETED.value or not order.completed_automatically:
+        raise ConflictError("Этот заказ не ожидает подтверждения выдачи")
+    order.completed_automatically = False
+    order.status_automatically = False
+    order.completed_at = utc_now()
+    order.version += 1
+    session.add(
+        AuditLog(
+            actor=actor,
+            action="auto_closed_order_collected",
+            entity_type="order",
+            entity_id=str(order.id),
+            payload={"verified_collection": True},
         )
     )
     await session.commit()
@@ -948,6 +1063,7 @@ async def analytics_summary(session: AsyncSession, event_id: int) -> dict[str, A
             select(Order.created_at, Order.completed_at).where(
                 Order.event_id == event_id,
                 Order.completed_at.is_not(None),
+                Order.completed_automatically.is_(False),
             )
         )
     ).all()
@@ -971,7 +1087,16 @@ async def analytics_summary(session: AsyncSession, event_id: int) -> dict[str, A
         if completed_at is not None
     ]
     total_orders = sum(by_status.values())
-    completed_orders = int(by_status.get(OrderStatus.COMPLETED.value, 0))
+    auto_closed_orders = int(
+        await session.scalar(
+            select(func.count(Order.id)).where(
+                Order.event_id == event_id,
+                Order.status == OrderStatus.COMPLETED.value,
+                Order.completed_automatically.is_(True),
+            )
+        ) or 0
+    )
+    completed_orders = int(by_status.get(OrderStatus.COMPLETED.value, 0)) - auto_closed_orders
     cancelled_orders = int(by_status.get(OrderStatus.CANCELLED.value, 0)) + int(
         by_status.get(OrderStatus.REJECTED.value, 0)
     )
@@ -985,6 +1110,7 @@ async def analytics_summary(session: AsyncSession, event_id: int) -> dict[str, A
         "unique_guests": unique_guests or 0,
         "active_orders": active_orders,
         "completed_orders": completed_orders,
+        "auto_closed_orders": auto_closed_orders,
         "cancelled_orders": cancelled_orders,
         "completion_rate": round(completed_orders / total_orders * 100, 1) if total_orders else 0.0,
         "cancellation_rate": round(cancelled_orders / total_orders * 100, 1)
@@ -1017,6 +1143,7 @@ def analytics_to_csv(summary: dict[str, Any]) -> str:
         "unique_guests",
         "active_orders",
         "completed_orders",
+        "auto_closed_orders",
         "cancelled_orders",
         "completion_rate",
         "cancellation_rate",
@@ -1065,6 +1192,12 @@ def order_to_dict(order: Order, language: str = Language.RU.value) -> dict[str, 
         "status": order.status,
         "version": order.version,
         "created_at": order.created_at.isoformat(),
+        "next_transition_at": (
+            order.next_transition_at.isoformat() if order.next_transition_at else None
+        ),
+        "auto_queue_size_snapshot": order.auto_queue_size_snapshot,
+        "completed_automatically": order.completed_automatically,
+        "status_automatically": order.status_automatically,
         "guest": order.user.display_name,
         "telegram_id": order.user.telegram_id,
         "comment": order.comment,

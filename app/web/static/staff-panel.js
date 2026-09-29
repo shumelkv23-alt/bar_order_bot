@@ -9,7 +9,16 @@
   function ageLabel(iso) { const level = urgency(iso); return `<span class="age" title="С момента создания: ${esc(Panel.date(iso))}">${level ? (level === 'critical' ? 'Долго · ' : 'Ожидает · ') : ''}${age(iso)} мин</span>`; }
   function card(order) {
     const [target,label] = next[order.status];
-    return `<article class="order-card ${urgency(order.created_at)}" data-key="o${order.id}"><div class="card-top"><span class="order-number">${esc(order.public_number)}</span>${ageLabel(order.created_at)}</div><p class="guest">${esc(order.guest)}</p><ul class="items">${order.items.map(item => `<li><b>${item.quantity} × ${esc(item.name)}</b>${item.modifiers.length ? `<div class="modifiers">${item.modifiers.map(esc).join(' · ')}</div>` : ''}</li>`).join('')}</ul>${order.comment ? `<p class="order-comment">${esc(order.comment)}</p>` : ''}<div class="card-actions"><button class="primary" data-id="${order.id}" data-action="${target}" data-version="${order.version}">${label}${icon('arrow')}</button>${order.status !== 'ready' ? `<button class="cancel" data-id="${order.id}" data-action="cancelled" data-version="${order.version}" aria-label="Отменить заказ ${esc(order.public_number)}">Отменить</button>` : ''}</div></article>`;
+    const deadline = data.configuration.auto_progress_enabled && order.next_transition_at ? `<p class="auto-deadline">${order.status === 'ready' ? 'Автозакрытие' : 'Автопереход'}: ${esc(Panel.date(order.next_transition_at))}</p>` : '';
+    return `<article class="order-card ${urgency(order.created_at)}" data-key="o${order.id}"><div class="card-top"><span class="order-number">${esc(order.public_number)}</span>${ageLabel(order.created_at)}</div><p class="guest">${esc(order.guest)}</p>${order.status_automatically ? '<p class="auto-deadline">Расчётный этап · сотрудник ещё не подтвердил</p>' : ''}<ul class="items">${order.items.map(item => `<li><b>${item.quantity} × ${esc(item.name)}</b>${item.modifiers.length ? `<div class="modifiers">${item.modifiers.map(esc).join(' · ')}</div>` : ''}</li>`).join('')}</ul>${order.comment ? `<p class="order-comment">${esc(order.comment)}</p>` : ''}${deadline}<div class="card-actions"><button class="primary" data-id="${order.id}" data-action="${target}" data-version="${order.version}">${label}${icon('arrow')}</button>${order.status !== 'ready' ? `<button class="cancel" data-id="${order.id}" data-action="cancelled" data-version="${order.version}" aria-label="Отменить заказ ${esc(order.public_number)}">Отменить</button>` : ''}</div></article>`;
+  }
+  function autoClosedCard(order) {
+    return `<article class="prep-batch" data-key="o${order.id}"><strong>${esc(order.public_number)} · ${esc(order.guest)}</strong><span>${order.items.map(item => `${item.quantity} × ${esc(item.name)}`).join(' · ')}</span><button data-id="${order.id}" data-action="confirm-collection" data-version="${order.version}">Подтвердить выдачу</button></article>`;
+  }
+  function renderPrep() {
+    const batches = data.prep_batches || [];
+    $('#prep-zone').hidden = !batches.length;
+    $('#prep-list').innerHTML = batches.map(batch => `<article class="prep-batch"><strong>${batch.quantity} × ${esc(batch.name)}</strong>${batch.modifiers.length ? `<span>${batch.modifiers.map(esc).join(' · ')}</span>` : ''}${batch.comment ? `<span>К позиции: ${esc(batch.comment)}</span>` : ''}${batch.order_comment ? `<span>К заказу: ${esc(batch.order_comment)}</span>` : ''}<p>${batch.orders.map(row => `${esc(row.number)} (${row.quantity})`).join(' · ')}</p></article>`).join('');
   }
   function specialCard(row) {
     const safeSource = /^https:\/\/www\.thecocktaildb\.com\/drink\/\d+$/.test(row.recipe_source_url || '') ? row.recipe_source_url : '';
@@ -42,14 +51,18 @@
     $('#event-name').textContent = data.event.name;
     $('#event-state').textContent = data.event.orders_enabled ? 'Приём открыт' : 'Приём на паузе';
     $('#event-state').className = `badge ${data.event.orders_enabled ? 'green' : 'orange'}`;
-    $('#total-count').textContent = data.orders.length;
+    $('#total-count').textContent = data.orders.filter(row => row.status !== 'completed').length;
     $('#queue-legend').textContent = `Ожидание: ${data.configuration.warning_minutes}+ мин · долго: ${data.configuration.critical_minutes}+ мин`;
+    renderPrep();
     if (!$('#board .column')) $('#board').innerHTML = statuses.map(([status,label]) => `<section class="column" data-status="${status}"><div class="column-heading"><h2>${label}</h2><span class="count"></span></div><div class="cards"></div></section>`).join('');
     statuses.forEach(([status]) => {
       const column = $(`[data-status="${status}"]`), rows = data.orders.filter(row => row.status === status).sort((a,b) => Panel.isoDate(a.created_at) - Panel.isoDate(b.created_at) || a.id - b.id);
       column.hidden = filter !== 'all' && filter !== status; $('.count',column).textContent = rows.length;
       reconcile($('.cards',column),rows,card);
     });
+    const autoClosed = data.orders.filter(row => row.status === 'completed' && row.completed_automatically);
+    $('#auto-closed-zone').hidden = !autoClosed.length;
+    reconcile($('#auto-closed-list'),autoClosed,autoClosedCard);
     const special = data.special_requests || [];
     $('#special-zone').hidden = !special.length; $('#special-count').textContent = special.length;
     reconcile($('#special-list'),special,specialCard);
@@ -71,7 +84,7 @@
     } catch (problem) {
       online = false; initialized = false; lockActions(); Panel.connection('Данные не обновляются', 'error');
       const absent = problem.status === 404 || /active event|активного мероприятия/i.test(problem.message);
-      if (absent) { data = null; $('#event-name').textContent = 'Нет активного мероприятия'; $('#event-state').textContent = ''; $('#total-count').textContent = ''; $('#special-zone').hidden = true; $('#board').innerHTML = '<div class="empty wide"><strong>Смена ещё не началась</strong>Администратор должен активировать мероприятие. Очередь появится автоматически.</div>'; Panel.error(); }
+      if (absent) { data = null; $('#event-name').textContent = 'Нет активного мероприятия'; $('#event-state').textContent = ''; $('#total-count').textContent = ''; $('#prep-zone').hidden = true; $('#auto-closed-zone').hidden = true; $('#special-zone').hidden = true; $('#board').innerHTML = '<div class="empty wide"><strong>Смена ещё не началась</strong>Администратор должен активировать мероприятие. Очередь появится автоматически.</div>'; Panel.error(); }
       else Panel.error(problem.message + (data ? ' Показаны последние полученные данные; действия временно отключены.' : ''));
       $('#board').setAttribute('aria-busy','false');
     } finally { loading = false; timer = setTimeout(load,data?.configuration.poll_interval_ms || 2500); }
@@ -84,7 +97,7 @@
     if (!decision || !online || pending) return;
     pending = true; lockActions();
     try {
-      await request(special ? `/api/v1/staff/special-requests/${id}` : `/api/v1/staff/orders/${id}/status`, {method:'PATCH',body:JSON.stringify(special ? {status:action,note:decision.note || ''} : {status:action,expected_version:Number(button.dataset.version)})});
+      await request(special ? `/api/v1/staff/special-requests/${id}` : action === 'confirm-collection' ? `/api/v1/staff/orders/${id}/confirm-collection` : `/api/v1/staff/orders/${id}/status`, {method:action === 'confirm-collection' ? 'POST' : 'PATCH',body:JSON.stringify(special ? {status:action,note:decision.note || ''} : action === 'confirm-collection' ? {expected_version:Number(button.dataset.version)} : {status:action,expected_version:Number(button.dataset.version)})});
       notify('Статус обновлён');
     } catch (problem) { notify(problem.status === 409 ? 'Заказ уже изменился. Обновляем очередь.' : problem.message, true); }
     finally { pending = false; online = false; lockActions(); await load(); }
