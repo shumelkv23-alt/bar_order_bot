@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     assistant_base_url: str | None = None
     assistant_model: str | None = "google/gemini-3.1-flash-lite"
     assistant_timeout_seconds: float = Field(default=25.0, ge=3.0, le=90.0)
+    cocktail_db_api_key: str | None = None
+
+    @property
+    def effective_cocktail_db_api_key(self) -> str | None:
+        return self.cocktail_db_api_key or None
 
     staff_warning_minutes: int = Field(default=5, ge=1, le=120)
     staff_critical_minutes: int = Field(default=10, ge=2, le=240)

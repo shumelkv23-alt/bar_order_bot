@@ -33,6 +33,7 @@ from app.models import (
     User,
 )
 from app.services.achievements import award_achievement
+from app.services.cocktail_recipes import RecipeProposal
 from app.services.secret_menu import (
     offer_available,
     release_portions,
@@ -87,6 +88,10 @@ def special_request_to_dict(request: SpecialRequest, language: str = "ru") -> di
         "guest": request.user.display_name,
         "language": request.user.language,
         "request_text": request.request_text,
+        "recipe_name": request.recipe_name,
+        "recipe_ingredients": request.recipe_ingredients,
+        "recipe_instructions": request.recipe_instructions,
+        "recipe_source_url": request.recipe_source_url,
         "source_transcript": request.source_transcript,
         "quantity": request.quantity,
         "status": request.status,
@@ -109,6 +114,7 @@ async def create_special_request(
     commit: bool = True,
     request_key: str | None = None,
     request_index: int | None = None,
+    recipe: RecipeProposal | None = None,
 ) -> SpecialRequest:
     event = await session.scalar(
         select(Event)
@@ -127,6 +133,10 @@ async def create_special_request(
         user_id=user_id,
         request_text=request_text.strip()[:300],
         source_transcript=source_transcript.strip(),
+        recipe_name=recipe.name if recipe else None,
+        recipe_ingredients=recipe.ingredients if recipe else None,
+        recipe_instructions=recipe.instructions if recipe else None,
+        recipe_source_url=recipe.source_url if recipe else None,
         request_key=request_key,
         request_index=request_index,
         quantity=quantity,

@@ -14,7 +14,14 @@ from app.bot import handlers, keyboards
 from app.db import Base
 from app.models import Order, SpecialRequest
 from app.services.assistant import AssistantResponse
-from app.services.orders import add_to_cart, get_active_event, list_event_menu, submit_cart
+from app.services.cocktail_recipes import RecipeProposal
+from app.services.orders import (
+    add_to_cart,
+    get_active_event,
+    list_event_menu,
+    special_request_to_dict,
+    submit_cart,
+)
 from app.services.seed import seed_demo_data
 
 
@@ -373,3 +380,73 @@ async def test_special_only_request_is_idempotent(flow):
         requests = list((await session.scalars(select(SpecialRequest))).all())
     assert len(requests) == 1
     assert requests[0].request_key == original_data["request_key"]
+
+
+async def test_unknown_drink_recipe_is_reviewed_and_sent_to_bartender(flow, monkeypatch):
+    await handlers.start(flow.message, flow.state)
+    await flow.state.update_data(
+        assistant_history=[
+            {"role": "user", "content": "I am driving tonight"},
+            {"role": "assistant", "content": "I will keep that in mind"},
+        ]
+    )
+    context = await handlers._voice_context(101)
+    proposal = RecipeProposal(
+        name="Lemonade",
+        ingredients=["30 ml Lemon juice", "10 ml Sugar syrup"],
+        instructions="Shake and strain.",
+        source_url="https://www.thecocktaildb.com/drink/12345",
+    )
+    lookup = AsyncMock(return_value=proposal)
+    monkeypatch.setattr(handlers.CocktailRecipeService, "find", lookup)
+    await handlers._present_assistant_result(
+        flow.status,
+        flow.state,
+        "An ultraviolet dragon drink",
+        context,
+        AssistantResponse(
+            intent="order",
+            reply="Here is a recipe idea",
+            unmatched=[
+                {"text": "An ultraviolet dragon drink", "quantity": 1, "search_query": "Lemonade"}
+            ],
+        ),
+        edit=True,
+    )
+    assert lookup.await_count == 1
+    assert "I am driving tonight" in lookup.call_args.kwargs["requirements"]
+    assert "30 ml Lemon juice" in flow.status.edit_text.call_args.args[0]
+    assert "I am driving tonight" in flow.status.edit_text.call_args.args[0]
+    await set_confirm_callback(flow)
+    await handlers.confirm_voice_order(flow.callback, flow.state)
+    async with flow.factory() as session:
+        request = (await session.scalars(select(SpecialRequest))).one()
+        payload = special_request_to_dict(request)
+    assert request.recipe_name == "Lemonade"
+    assert payload["recipe_ingredients"] == proposal.ingredients
+    assert payload["recipe_source_url"] == proposal.source_url
+    assert "I am driving tonight" in payload["source_transcript"]
+
+
+async def test_review_too_long_cannot_be_confirmed(flow):
+    await handlers.start(flow.message, flow.state)
+    await flow.state.set_state(handlers.VoiceOrder.reviewing)
+    await flow.state.update_data(
+        language="en",
+        event_id=1,
+        request_key="a0b00e72-dbbd-4c2c-8ced-9b10fc464b75",
+        transcript="x" * 1000,
+        assistant_reply="y" * 1500,
+        items=[],
+        unmatched=[
+            {"text": "z" * 300, "quantity": 1, "suggestions": []}
+            for _ in range(10)
+        ],
+    )
+    await handlers._show_voice_review(flow.message, flow.state)
+    assert await flow.state.get_state() == handlers.Waiter.waiting.state
+    assert "too long" in flow.message.edit_text.call_args.args[0]
+    assert not any(
+        value.startswith("voice_confirm:")
+        for value in callbacks(flow.message.edit_text.call_args.kwargs["reply_markup"])
+    )

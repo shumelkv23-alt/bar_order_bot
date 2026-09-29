@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import asdict
 from html import escape
 from io import BytesIO
 from uuid import uuid4
@@ -36,6 +37,7 @@ from app.services.assistant import (
     MenuAssistantService,
     fallback_assistant_response,
 )
+from app.services.cocktail_recipes import CocktailRecipeService, RecipeProposal
 from app.services.orders import (
     DomainError,
     add_to_cart,
@@ -122,6 +124,7 @@ async def _resume_waiter(state: FSMContext) -> None:
             "items",
             "unmatched",
             "assistant_reply",
+            "guest_context",
             "cart_snapshot",
             "request_key",
         )
@@ -975,8 +978,37 @@ def _assistant_review_data(
                 }
                 for suggestion in suggestion_analysis.unmatched[0].suggestions[:2]
             ]
-        unmatched.append({"text": row.text, "quantity": row.quantity, "suggestions": suggestions})
+        unmatched.append(
+            {
+                "text": row.text,
+                "quantity": row.quantity,
+                "search_query": row.search_query,
+                "suggestions": suggestions,
+            }
+        )
     return items, unmatched
+
+
+def _guest_context(history: list[dict], current_text: str) -> str:
+    user_messages = [
+        str(row.get("content", ""))[:300]
+        for row in history[-10:]
+        if row.get("role") == "user" and row.get("content")
+    ]
+    return " | ".join([*user_messages[-4:], current_text[:300]])[-1200:]
+
+
+async def _research_unmatched(unmatched: list[dict], guest_context: str) -> None:
+    settings = get_settings()
+    service = CocktailRecipeService(settings.effective_cocktail_db_api_key)
+    for clause in unmatched[:2]:
+        if any(suggestion["confidence"] >= 0.75 for suggestion in clause.get("suggestions", [])):
+            continue
+        recipe = await service.find(
+            clause["text"], clause.get("search_query", ""), requirements=guest_context
+        )
+        if recipe:
+            clause["recipe"] = asdict(recipe)
 
 
 def _assistant_recommendations(result: AssistantResponse, context: dict) -> list[dict]:
@@ -1012,7 +1044,10 @@ async def _present_assistant_result(
         reply,
     )
     items, unmatched = _assistant_review_data(result, context)
+    guest_context = _guest_context(data.get("assistant_history", []), text)
     if items or unmatched:
+        if unmatched:
+            await _research_unmatched(unmatched, guest_context)
         await state.set_state(VoiceOrder.reviewing)
         await state.update_data(
             transcript=text,
@@ -1021,6 +1056,7 @@ async def _present_assistant_result(
             items=items,
             unmatched=unmatched,
             assistant_reply=reply,
+            guest_context=guest_context,
             assistant_history=history,
             cart_snapshot=context["current_cart"],
             request_key=str(uuid4()),
@@ -1058,6 +1094,7 @@ def _voice_review_text(
     language: str,
     assistant_reply: str = "",
     cart_snapshot: list[dict] | None = None,
+    guest_context: str = "",
 ) -> str:
     lines = []
     if assistant_reply:
@@ -1090,6 +1127,13 @@ def _voice_review_text(
                 suffix += " · please verify" if language == Language.EN.value else " · проверьте"
             lines.append(f"• {item['quantity']} × {escape(item['name'])}{suffix}")
     if unmatched:
+        if guest_context and guest_context != transcript:
+            label = (
+                "\n<b>Your preferences:</b> "
+                if language == Language.EN.value
+                else "\n<b>Ваши пожелания:</b> "
+            )
+            lines.append(label + escape(guest_context[-350:]))
         lines.append(
             "\n<b>Not on the menu:</b>"
             if language == Language.EN.value
@@ -1107,6 +1151,22 @@ def _voice_review_text(
                     else f"\n  Похожие: {suggestions}"
                 )
             lines.append(line)
+            recipe = clause.get("recipe")
+            if recipe:
+                lines.append(
+                    f"  {'Recipe idea' if language == Language.EN.value else 'Идея рецепта'}: "
+                    f"<b>{escape(recipe['name'])}</b>"
+                )
+                lines.append(
+                    "  " + ", ".join(escape(value) for value in recipe["ingredients"][:8])
+                )
+                lines.append(f"  {escape(recipe['instructions'][:350])}")
+                lines.append(f"  {escape(recipe['source_url'])}")
+                lines.append(
+                    "  Bartender will check your preferences and available ingredients."
+                    if language == Language.EN.value
+                    else "  Бармен проверит пожелания и наличие ингредиентов."
+                )
         lines.append(
             "I can send unknown items to the bartender as a special request."
             if language == Language.EN.value
@@ -1128,15 +1188,27 @@ def _voice_review_text(
 async def _show_voice_review(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     language = data.get("language", Language.RU.value)
+    review_text = _voice_review_text(
+        data.get("transcript", ""),
+        data.get("items", []),
+        data.get("unmatched", []),
+        language,
+        data.get("assistant_reply", ""),
+        data.get("cart_snapshot", []),
+        data.get("guest_context", ""),
+    )
+    if len(review_text.encode("utf-16-le")) // 2 > 3900:
+        await state.set_state(Waiter.waiting)
+        await state.set_data({"assistant_history": data.get("assistant_history", [])})
+        await message.edit_text(
+            "Заказ слишком длинный для одного сообщения. Отправьте его несколькими частями."
+            if language == Language.RU.value
+            else "This order is too long for one message. Please send it in smaller parts.",
+            reply_markup=waiter_keyboard(language),
+        )
+        return
     await message.edit_text(
-        _voice_review_text(
-            data.get("transcript", ""),
-            data.get("items", []),
-            data.get("unmatched", []),
-            language,
-            data.get("assistant_reply", ""),
-            data.get("cart_snapshot", []),
-        ),
+        review_text,
         reply_markup=voice_review_keyboard(
             language,
             data.get("items", []),
@@ -1428,10 +1500,15 @@ async def _confirm_review(telegram_id: int, message: Message, state: FSMContext)
                             event.id,
                             clause["text"],
                             clause["quantity"],
-                            source_transcript=data.get("transcript", ""),
+                            source_transcript=data.get("guest_context", data.get("transcript", "")),
                             commit=False,
                             request_key=data["request_key"],
                             request_index=index,
+                            recipe=(
+                                RecipeProposal(**clause["recipe"])
+                                if clause.get("recipe")
+                                else None
+                            ),
                         )
                         requests.append(request)
                     cart = await get_or_create_cart(session, user.id, event.id)

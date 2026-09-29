@@ -82,6 +82,10 @@ button.primary:hover, .button-link.primary:hover { background: var(--blue-hover)
 .segmented button[aria-pressed=true] { font-weight: 700; }
 .badge.orange { color: #a7420b; }
 .order-card.warning { border-top-color: var(--orange); }
+.special-recipe { margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.special-recipe ul { margin: 8px 0; padding-left: 18px; }
+.special-recipe p { margin: 8px 0; white-space: pre-wrap; }
+.special-recipe a { color: var(--blue); }
 .order-comment { border-left-color: var(--orange); background: #fff5ee; }
 .special-zone summary::before { color: var(--orange); }
 .metric strong, .rank-row strong { color: var(--blue); }
