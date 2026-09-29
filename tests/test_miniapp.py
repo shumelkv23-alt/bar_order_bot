@@ -21,7 +21,7 @@ from app.api.admin import create_secret_offer, update_secret_offer
 from app.db import Base, get_session
 from app.domain import OrderStatus
 from app.main import app
-from app.models import MenuItem, User
+from app.models import EventMenuItem, MenuItem, User
 from app.schemas import SecretOfferCreate, SecretOfferUpdate
 from app.services import miniapp_leaderboard
 from app.services.miniapp_auth import InvalidInitData, verify_init_data
@@ -239,6 +239,107 @@ async def test_miniapp_order_mystery_and_consent(miniapp_client):
     late_retry = await client.post("/api/v1/miniapp/orders", headers=headers, json=payload)
     assert late_retry.status_code == 200
     assert late_retry.json()["id"] == first.json()["id"]
+
+
+async def test_repeat_order_replaces_cart_only_when_every_line_is_available(miniapp_client):
+    client, factory = miniapp_client
+    headers = {"X-Telegram-Init-Data": signed_data(202)}
+    other_headers = {"X-Telegram-Init-Data": signed_data(203)}
+    products = [
+        product
+        for category in (await client.get("/api/v1/miniapp/menu", headers=headers)).json()[
+            "categories"
+        ]
+        for product in category["items"]
+    ]
+    first = next(product for product in products if product["modifiers"])
+    second = next(product for product in products if product["id"] != first["id"])
+    modifier_id = first["modifiers"][0]["id"]
+    cart_url = "/api/v1/miniapp/cart/items"
+    await client.post(cart_url, headers=headers, json={
+        "menu_item_id": first["id"], "quantity": 2,
+        "modifier_ids": [modifier_id], "comment": "Less sugar",
+    })
+    await client.post(cart_url, headers=headers, json={
+        "menu_item_id": second["id"], "quantity": 1, "comment": "No garnish",
+    })
+    original = await client.post(
+        "/api/v1/miniapp/orders", headers=headers,
+        json={"comment": "Serve together", "idempotency_key": str(uuid4())},
+    )
+    assert original.status_code == 200
+    repeat_url = f"/api/v1/miniapp/orders/{original.json()['id']}/repeat"
+    empty_cart = (await client.get("/api/v1/miniapp/cart", headers=headers)).json()
+    repeat_request = {"expected_cart_fingerprint": empty_cart["fingerprint"]}
+    assert (await client.post(
+        repeat_url, headers=headers, json=repeat_request
+    )).status_code == 409
+    other_cart = (await client.get("/api/v1/miniapp/cart", headers=other_headers)).json()
+    assert (await client.post(
+        repeat_url, headers=other_headers,
+        json={"expected_cart_fingerprint": other_cart["fingerprint"]},
+    )).status_code == 404
+
+    async with factory() as session:
+        await transition_order(session, original.json()["id"], OrderStatus.CANCELLED, actor="test")
+
+    await client.post(cart_url, headers=headers, json={
+        "menu_item_id": second["id"], "quantity": 2,
+    })
+    before = (await client.get("/api/v1/miniapp/cart", headers=headers)).json()
+    async with factory() as session:
+        event = await get_active_event(session)
+        entry = await session.scalar(select(EventMenuItem).where(
+            EventMenuItem.event_id == event.id,
+            EventMenuItem.menu_item_id == first["id"],
+        ))
+        entry.is_available = False
+        await session.commit()
+    replace_request = {
+        "expected_cart_fingerprint": before["fingerprint"],
+        "replace_existing": True,
+    }
+    assert (await client.post(
+        repeat_url, headers=headers, json=replace_request
+    )).status_code == 409
+    assert (await client.get("/api/v1/miniapp/cart", headers=headers)).json() == before
+
+    async with factory() as session:
+        event = await get_active_event(session)
+        entry = await session.scalar(select(EventMenuItem).where(
+            EventMenuItem.event_id == event.id,
+            EventMenuItem.menu_item_id == first["id"],
+        ))
+        entry.is_available = True
+        await session.commit()
+    assert (await client.post(
+        repeat_url, headers=headers, json=repeat_request
+    )).status_code == 409
+    assert (await client.post(
+        repeat_url, headers=headers,
+        json={**repeat_request, "replace_existing": True},
+    )).status_code == 409
+    assert (await client.post(
+        repeat_url, headers=headers,
+        json={"expected_cart_fingerprint": before["fingerprint"]},
+    )).status_code == 409
+    repeated = await client.post(repeat_url, headers=headers, json=replace_request)
+    assert repeated.status_code == 200
+    assert repeated.json()["order_comment"] == "Serve together"
+    assert [
+        (item["menu_item_id"], item["quantity"], item["modifier_ids"], item["comment"])
+        for item in repeated.json()["cart"]["items"]
+    ] == [
+        (first["id"], 2, [modifier_id], "Less sugar"),
+        (second["id"], 1, [], "No garnish"),
+    ]
+    retry = await client.post(repeat_url, headers=headers, json={
+        "expected_cart_fingerprint": repeated.json()["cart"]["fingerprint"],
+        "replace_existing": True,
+    })
+    assert retry.status_code == 200
+    assert retry.json()["cart"]["total_quantity"] == 3
+    assert len(retry.json()["cart"]["items"]) == 2
 
 
 async def test_achievements_are_awarded_once_and_kept_in_profile(miniapp_client):

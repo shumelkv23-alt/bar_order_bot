@@ -10,7 +10,8 @@ export type CartItem = {
   id: number; menu_item_id: number; name: string; quantity: number
   modifier_ids: number[]; modifiers: string[]; comment: string
 }
-export type Cart = { id: number; event_id: number; items: CartItem[]; total_quantity: number }
+export type Cart = { id: number; event_id: number; items: CartItem[]; total_quantity: number; fingerprint: string }
+export type RepeatOrderResult = { cart: Cart; order_comment: string }
 export type Order = {
   id: number; public_number: string; status: string; version: number; created_at: string
   status_automatically: boolean; completed_automatically: boolean

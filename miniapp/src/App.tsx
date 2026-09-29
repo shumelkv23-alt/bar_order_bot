@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, ApiError, type Achievements, type Bootstrap, type Cart, type CartItem, type Language, type Leaderboard, type Menu, type MenuItem, type Order, type SecretMenu, type SecretOffer } from './api'
+import { api, ApiError, type Achievements, type Bootstrap, type Cart, type CartItem, type Language, type Leaderboard, type Menu, type MenuItem, type Order, type RepeatOrderResult, type SecretMenu, type SecretOffer } from './api'
 import { copy } from './i18n'
 import { initTelegram, telegram } from './telegram'
 
@@ -47,6 +47,7 @@ export function App() {
   const [alcoholFree, setAlcoholFree] = useState(false)
   const [order, setOrder] = useState<Order | null>(null)
   const [orderComment, setOrderComment] = useState('')
+  const [repeatConfirmOpen, setRepeatConfirmOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -228,7 +229,7 @@ export function App() {
       setOrder(created)
       if (created.new_achievements?.length) setNewBadge(created.new_achievements[0])
       setScreen('order')
-      setCart({ id: cart?.id || 0, event_id: cart?.event_id || 0, items: [], total_quantity: 0 })
+      setCart({ id: cart?.id || 0, event_id: cart?.event_id || 0, items: [], total_quantity: 0, fingerprint: '' })
       requestKey.current = null
       try { setBootstrap(await api<Bootstrap>('/bootstrap', initData)) } catch { /* order remains confirmed */ }
     })
@@ -292,6 +293,32 @@ export function App() {
   const activeOrder = bootstrap.active_order
   const canOrder = event.orders_enabled && !activeOrder
   const cartCount = cart?.total_quantity || 0
+  const previousOrder = !activeOrder ? bootstrap.latest_order : null
+  const repeatPreviousOrder = () => {
+    if (!previousOrder || !canOrder) return
+    void run(async () => {
+      const currentCart = await api<Cart>('/cart', initData)
+      setCart(currentCart)
+      if (currentCart.items.length && !repeatConfirmOpen) { setRepeatConfirmOpen(true); return }
+      let repeated: RepeatOrderResult
+      try {
+        repeated = await api<RepeatOrderResult>(`/orders/${previousOrder.id}/repeat`, initData, 'POST', {
+          expected_cart_fingerprint: currentCart.fingerprint,
+          replace_existing: repeatConfirmOpen,
+        })
+      } catch (cause) { setRepeatConfirmOpen(false); throw cause }
+      setCart(repeated.cart)
+      setOrderComment(repeated.order_comment)
+      setRepeatConfirmOpen(false)
+      requestKey.current = null
+      setScreen('cart')
+    })
+  }
+  const repeatPanel = previousOrder && <section className="repeat-card">
+    <div><small>{t.previousOrder} · {previousOrder.public_number}</small><p>{previousOrder.items.map(item => `${item.quantity} × ${item.name}`).join(' · ')}</p></div>
+    {repeatConfirmOpen && <p className="repeat-warning">{t.repeatReplaceWarning}</p>}
+    <div className="repeat-actions"><button className="button button--secondary" disabled={busy || !canOrder} onClick={repeatPreviousOrder}>{repeatConfirmOpen ? t.replaceCart : t.repeatOrder}</button>{repeatConfirmOpen && <button className="link-button" onClick={() => setRepeatConfirmOpen(false)}>{t.back}</button>}</div>
+  </section>
   const badgeNames: Record<string, string> = { first_contact: t.firstContact, pathfinder: t.pathfinder, connoisseur: t.connoisseur }
 
   return <div className="app-shell">
@@ -311,6 +338,7 @@ export function App() {
     <main className="app-content">
       {screen === 'menu' && <>
         <div className="section-heading"><h2>{t.menu}</h2><span>{catalogItems.length}</span></div>
+        {repeatPanel}
         <label className="search-field"><Icon name="search" size={19} /><span className="sr-only">{t.search}</span><input type="search" placeholder={t.search} value={query} onChange={event => setQuery(event.target.value)} /></label>
         <div className="chip-row" aria-label={t.menu}>
           <button className={categoryId === null ? 'chip chip--active' : 'chip'} onClick={() => setCategoryId(null)}>{t.all}</button>
@@ -411,6 +439,7 @@ export function App() {
       {screen === 'order' && order && <>
         <div className="order-confirmation"><div className="confirmation-mark"><Icon name="check" size={30} /></div><p>{t.status}: {order.completed_automatically ? t.autoCompleted : order.status_automatically && order.status === 'accepted' ? t.autoAccepted : order.status_automatically && order.status === 'preparing' ? t.autoPreparing : order.status_automatically && order.status === 'ready' ? t.autoReady : t[order.status as keyof typeof t] || order.status}</p><h2>{order.public_number}</h2></div>
         <div className="order-lines">{order.items.map((item, index) => <div key={`${item.name}-${index}`}><span>{item.name}{item.modifiers.length ? ` · ${item.modifiers.join(', ')}` : ''}</span><strong>×{item.quantity}</strong></div>)}</div>
+        {repeatPanel}
         <button className="button button--secondary" onClick={() => setScreen('menu')}>{t.menu}</button>
       </>}
     </main>

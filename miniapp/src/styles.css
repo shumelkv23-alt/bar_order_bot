@@ -118,6 +118,12 @@ input[type="checkbox"] { width: 19px; height: 19px; margin: 0; accent-color: var
 .cart-total span, .my-rank span { color: var(--muted); }
 .helper-text { color: var(--muted); font-size: 14px; margin: 8px 0 14px; }
 .inline-info { border: 1px solid #286c69; background: #103031; border-radius: 10px; padding: 13px; font-size: 14px; margin: 0 0 18px; }
+.repeat-card { margin: 0 0 22px; padding: 16px; border: 1px solid #456a68; border-radius: 12px; background: #152b2e; }
+.repeat-card small { color: var(--orange-bright); font-size: 12px; font-weight: 700; }
+.repeat-card p { margin: 8px 0 14px; color: var(--text); font-size: 14px; line-height: 1.4; }
+.repeat-card .repeat-warning { color: var(--orange-bright); }
+.repeat-actions { display: flex; align-items: center; gap: 12px; }
+.repeat-actions .link-button { flex: none; }
 
 .mystery-stage { position: relative; min-height: 224px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; margin-bottom: 22px; border: 1px solid #485471; border-radius: 12px; background: var(--surface); text-align: center; }
 .easter-mark { position: absolute; top: 9px; right: 9px; width: 44px; height: 44px; border: 0; background: transparent; color: var(--orange-bright); font-size: 22px; }

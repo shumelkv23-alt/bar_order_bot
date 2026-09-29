@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import hashlib
+import json
 from datetime import UTC, datetime
 from functools import wraps
 from io import StringIO
@@ -65,6 +67,7 @@ class ValidationError(DomainError):
 
 
 _sqlite_order_locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
+_sqlite_event_locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
 
 
 def serialize_sqlite_order_write(function):
@@ -75,6 +78,18 @@ def serialize_sqlite_order_write(function):
         lock = _sqlite_order_locks.setdefault(order_id, asyncio.Lock())
         async with lock:
             return await function(session, order_id, *args, **kwargs)
+
+    return wrapped
+
+
+def serialize_sqlite_event_write(function):
+    @wraps(function)
+    async def wrapped(session: AsyncSession, user_id: int, event_id: int, *args, **kwargs):
+        if session.bind.dialect.name != "sqlite":
+            return await function(session, user_id, event_id, *args, **kwargs)
+        lock = _sqlite_event_locks.setdefault(event_id, asyncio.Lock())
+        async with lock:
+            return await function(session, user_id, event_id, *args, **kwargs)
 
     return wrapped
 
@@ -384,6 +399,16 @@ async def get_cart(session: AsyncSession, user_id: int, event_id: int) -> Cart:
     return cart
 
 
+def cart_fingerprint(cart: Cart) -> str:
+    """Version token for optimistic replacement of cart contents."""
+    contents = [
+        [item.id, item.menu_item_id, item.quantity, item.selected_modifiers, item.comment]
+        for item in sorted(cart.items, key=lambda row: row.id)
+    ]
+    encoded = json.dumps([cart.id, contents], ensure_ascii=False, sort_keys=True).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 async def add_to_cart(
     session: AsyncSession,
     user_id: int,
@@ -571,6 +596,7 @@ async def update_cart_item_details(
     return await get_or_create_cart(session, user_id, event_id)
 
 
+@serialize_sqlite_event_write
 async def submit_cart(
     session: AsyncSession,
     user_id: int,
@@ -880,6 +906,74 @@ async def get_user_active_order(session: AsyncSession, user_id: int, event_id: i
         .order_by(Order.created_at.desc())
     )
     return await session.scalar(statement)
+
+
+@serialize_sqlite_event_write
+async def repeat_order_to_cart(
+    session: AsyncSession,
+    user_id: int,
+    event_id: int,
+    order_id: int,
+    *,
+    expected_cart_fingerprint: str,
+    replace_existing: bool,
+) -> tuple[Cart, str]:
+    """Replace the cart with a current, validated copy of one past order."""
+    event = await session.scalar(
+        select(Event)
+        .where(Event.id == event_id)
+        .with_for_update(of=Event)
+        .execution_options(populate_existing=True)
+    )
+    if not event or event.status != EventStatus.ACTIVE.value or not event.orders_enabled:
+        raise ConflictError("Приём заказов сейчас закрыт")
+    source = await get_order(session, order_id)
+    if source.user_id != user_id or source.event_id != event_id:
+        raise NotFoundError("Заказ не найден")
+    if await get_user_active_order(session, user_id, event_id):
+        raise ConflictError("Сначала дождитесь завершения текущего заказа")
+    if not source.items:
+        raise ConflictError("Предыдущий заказ пуст")
+    if sum(item.quantity for item in source.items) > event.max_items_per_order:
+        raise ConflictError("Предыдущий заказ превышает текущий лимит позиций")
+
+    quantities: dict[int, int] = {}
+    repeated_items: list[CartItem] = []
+    for item in source.items:
+        if item.menu_item_id is None:
+            raise ConflictError("Предыдущий заказ содержит недоступные позиции")
+        quantities[item.menu_item_id] = quantities.get(item.menu_item_id, 0) + item.quantity
+        if quantities[item.menu_item_id] > event.max_same_item:
+            raise ConflictError("Предыдущий заказ превышает текущий лимит одной позиции")
+        try:
+            entry = await get_menu_entry(session, event_id, item.menu_item_id, user_id=user_id)
+            if not entry.is_available:
+                raise ConflictError("Позиция сейчас недоступна")
+            modifiers = _selected_modifiers(
+                entry, [modifier["id"] for modifier in item.modifiers_snapshot]
+            )
+        except (DomainError, KeyError, TypeError) as exc:
+            raise ConflictError(
+                "Предыдущий заказ содержит недоступные позиции или добавки"
+            ) from exc
+        repeated_items.append(
+            CartItem(
+                menu_item_id=item.menu_item_id,
+                quantity=item.quantity,
+                selected_modifiers=modifiers,
+                comment=item.comment,
+            )
+        )
+
+    cart = await get_or_create_cart(session, user_id, event_id, for_update=True)
+    if cart_fingerprint(cart) != expected_cart_fingerprint:
+        raise ConflictError("Корзина уже изменилась. Откройте её заново")
+    if cart.items and not replace_existing:
+        raise ConflictError("Подтвердите замену корзины")
+    cart.items.clear()
+    cart.items.extend(repeated_items)
+    await session.commit()
+    return await get_or_create_cart(session, user_id, event_id), source.comment
 
 
 async def list_staff_orders(

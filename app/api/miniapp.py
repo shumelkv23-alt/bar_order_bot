@@ -31,12 +31,14 @@ from app.services.orders import (
     NotFoundError,
     ValidationError,
     add_to_cart,
+    cart_fingerprint,
     cart_to_dict,
     get_active_event,
     get_cart,
     get_user_active_order,
     list_event_menu,
     remove_cart_item,
+    repeat_order_to_cart,
     set_user_language,
     submit_cart,
     update_cart_item_details,
@@ -92,6 +94,11 @@ class SubmitOrder(BaseModel):
     idempotency_key: UUID
 
 
+class RepeatOrder(BaseModel):
+    expected_cart_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    replace_existing: bool = False
+
+
 class MysteryRequest(BaseModel):
     category_id: int | None = None
     exclude_menu_item_id: int | None = None
@@ -142,8 +149,24 @@ def _english_error(exc: DomainError) -> str:
         "Модификатор выбран повторно": "An option was selected twice",
         "Корзина пуста": "Your order is empty",
         "Корзина уже изменилась. Откройте её заново": "Your cart changed. Please refresh it",
+        "Подтвердите замену корзины": "Confirm that you want to replace your cart",
         "Позиция корзины не найдена": "Cart item not found",
         "Активное мероприятие не найдено": "No active event",
+        "Заказ не найден": "Order not found",
+        "Сначала дождитесь завершения текущего заказа": "Wait for your current order to finish",
+        "Предыдущий заказ пуст": "The previous order is empty",
+        "Предыдущий заказ превышает текущий лимит позиций": (
+            "The previous order exceeds the current item limit"
+        ),
+        "Предыдущий заказ превышает текущий лимит одной позиции": (
+            "The previous order exceeds the current per-item limit"
+        ),
+        "Предыдущий заказ содержит недоступные позиции": (
+            "The previous order contains unavailable items"
+        ),
+        "Предыдущий заказ содержит недоступные позиции или добавки": (
+            "The previous order contains unavailable items or options"
+        ),
         "В этой категории пока нет доступных позиций": "No available items in this category",
         "Сначала найдите знак на экране Мистери": "Find the mark on the Mystery screen first",
         "Секретная позиция недоступна": "This secret item is unavailable",
@@ -236,6 +259,7 @@ def _cart_view(cart, language: str) -> dict:
     for serialized, original in zip(payload["items"], cart.items, strict=True):
         serialized["modifier_ids"] = [modifier["id"] for modifier in original.selected_modifiers]
     payload["total_quantity"] = sum(item["quantity"] for item in payload["items"])
+    payload["fingerprint"] = cart_fingerprint(cart)
     return payload
 
 
@@ -477,6 +501,21 @@ async def latest_order(session: Session, user: Guest) -> dict:
         event = await get_active_event(session)
         order = await _latest_order(session, user.id, event.id)
         return {"order": _order_view(order, user.language) if order else None}
+    except DomainError as exc:
+        raise _error(exc, user.language) from exc
+
+
+@router.post("/orders/{order_id}/repeat")
+async def repeat_order(order_id: int, payload: RepeatOrder, session: Session, user: Guest) -> dict:
+    _rate_limit(user.id, "repeat_order", 10)
+    try:
+        event = await get_active_event(session)
+        cart, order_comment = await repeat_order_to_cart(
+            session, user.id, event.id, order_id,
+            expected_cart_fingerprint=payload.expected_cart_fingerprint,
+            replace_existing=payload.replace_existing,
+        )
+        return {"cart": _cart_view(cart, user.language), "order_comment": order_comment}
     except DomainError as exc:
         raise _error(exc, user.language) from exc
 
