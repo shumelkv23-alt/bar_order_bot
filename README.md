@@ -178,6 +178,10 @@ python -m app.bot.runner
 Для тестового стенда достаточно Docker Desktop. Текущий `.env` уже настроен на
 PostgreSQL внутри Docker, поэтому API и база запускаются одной командой:
 
+Для production и нескольких процессов API используйте PostgreSQL. SQLite
+подходит для локального запуска с одним процессом: замена уведомлений о статусе
+при SQLite сериализуется внутри процесса приложения.
+
 ```powershell
 cd C:\Users\user\Documents\ChatGPT\ML\bar-order-bot
 docker compose --profile tools --profile telegram up -d --build

@@ -193,6 +193,7 @@ class Order(TimestampMixin, Base):
     comment: Mapped[str] = mapped_column(String(300), default="")
     version: Mapped[int] = mapped_column(Integer, default=1)
     idempotency_key: Mapped[str | None] = mapped_column(String(36))
+    status_notification_message_id: Mapped[int | None] = mapped_column(BigInteger)
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     preparing_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -334,6 +335,7 @@ class SpecialRequest(TimestampMixin, Base):
         String(20), default=SpecialRequestStatus.SUBMITTED.value, index=True
     )
     bartender_note: Mapped[str] = mapped_column(String(300), default="")
+    status_notification_message_id: Mapped[int | None] = mapped_column(BigInteger)
 
     event: Mapped[Event] = relationship(lazy="joined")
     user: Mapped[User] = relationship(lazy="joined")

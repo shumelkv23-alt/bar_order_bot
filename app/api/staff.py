@@ -1,15 +1,17 @@
+import asyncio
 import logging
 from typing import Annotated
+from weakref import WeakValueDictionary
 
 from aiogram import Bot
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db import get_session
 from app.domain import Language, OrderStatus, SpecialRequestStatus
-from app.models import Event
+from app.models import Event, Order, SpecialRequest
 from app.schemas import OrderStatusUpdate, SpecialRequestStatusUpdate
 from app.services.orders import (
     DomainError,
@@ -23,6 +25,7 @@ from app.services.orders import (
     transition_order,
     transition_special_request,
 )
+from app.services.telegram_notifications import replace_status_message
 
 from .dependencies import require_analytics, require_panel_role, require_staff
 from .errors import domain_http_error
@@ -30,6 +33,7 @@ from .errors import domain_http_error
 router = APIRouter(prefix="/api/v1", tags=["staff"])
 Session = Annotated[AsyncSession, Depends(get_session)]
 logger = logging.getLogger(__name__)
+_sqlite_notification_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
 @router.get("/session")
@@ -74,6 +78,80 @@ SPECIAL_REQUEST_MESSAGES = {
         SpecialRequestStatus.REJECTED: "Your special request was declined: {request}.{note}",
     },
 }
+
+
+async def _notify_status(
+    session: AsyncSession,
+    bot: Bot,
+    model: type[Order] | type[SpecialRequest],
+    row_id: int,
+    target: str,
+    text: str,
+    *,
+    expected_version: int | None = None,
+) -> None:
+    await session.commit()
+    if session.bind.dialect.name == "sqlite":
+        key = f"{model.__tablename__}:{row_id}"
+        lock = _sqlite_notification_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            await _notify_status_sqlite(session, bot, model, row_id, target, text, expected_version)
+        return
+    await _notify_status_locked(session, bot, model, row_id, target, text, expected_version)
+
+
+async def _notify_status_sqlite(
+    session: AsyncSession,
+    bot: Bot,
+    model: type[Order] | type[SpecialRequest],
+    row_id: int,
+    target: str,
+    text: str,
+    expected_version: int | None,
+) -> None:
+    row = await session.get(model, row_id, populate_existing=True)
+    if row is None or row.status != target or (
+        expected_version is not None and row.version != expected_version
+    ):
+        await session.commit()
+        return
+    chat_id = row.user.telegram_id
+    previous_id = row.status_notification_message_id
+    await session.commit()
+    new_id = await replace_status_message(bot, chat_id, previous_id, text)
+    await session.execute(
+        update(model).where(model.id == row_id).values(status_notification_message_id=new_id)
+    )
+    await session.commit()
+
+
+async def _notify_status_locked(
+    session: AsyncSession,
+    bot: Bot,
+    model: type[Order] | type[SpecialRequest],
+    row_id: int,
+    target: str,
+    text: str,
+    expected_version: int | None,
+) -> None:
+    row = await session.scalar(
+        select(model)
+        .where(model.id == row_id)
+        .with_for_update(of=model)
+        .execution_options(populate_existing=True)
+    )
+    if row is None or row.status != target or (
+        expected_version is not None and row.version != expected_version
+    ):
+        await session.commit()
+        return
+    row.status_notification_message_id = await replace_status_message(
+        bot,
+        row.user.telegram_id,
+        row.status_notification_message_id,
+        text,
+    )
+    await session.commit()
 
 
 @router.get("/staff/orders")
@@ -142,8 +220,12 @@ async def update_special_request(
     if bot and template:
         note = f" {payload.note}" if payload.note else ""
         try:
-            await bot.send_message(
-                special.user.telegram_id,
+            await _notify_status(
+                session,
+                bot,
+                SpecialRequest,
+                special.id,
+                payload.status.value,
                 template.format(request=special.request_text, note=note),
             )
         except Exception as exc:
@@ -175,9 +257,14 @@ async def update_order_status(
     message_template = STATUS_MESSAGES[language].get(payload.status)
     if bot and message_template:
         try:
-            await bot.send_message(
-                order.user.telegram_id,
+            await _notify_status(
+                session,
+                bot,
+                Order,
+                order.id,
+                payload.status.value,
                 message_template.format(number=order.public_number),
+                expected_version=order.version,
             )
         except Exception as exc:
             # The status change must not roll back if Telegram is temporarily unavailable.
