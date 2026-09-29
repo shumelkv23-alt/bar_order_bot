@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Голосовой заказ напитков для событий и небольших баров">
+  <title>Nightshift Voice Bar</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="home-body">
+  <nav class="home-nav" aria-label="Основная навигация">
+    <a class="wordmark" href="/">
+      <span class="wordmark-mark" aria-hidden="true"></span>
+      <span>Nightshift</span>
+    </a>
+    <div class="home-links">
+      <a href="#voice-flow">Как работает</a>
+      <a href="/owner">Аналитика</a>
+      <a href="/staff">Очередь бармена</a>
+    </div>
+  </nav>
+
+  <main>
+    <section class="hero-shell">
+      <div class="hero-copy">
+        <div class="hero-kicker">Voice ordering for live events</div>
+        <h1>Скажите.<br>Мы смешаем.</h1>
+        <p>Голос превращается в понятный заказ, а бармен видит только то, что может приготовить прямо сейчас.</p>
+        <div class="hero-actions">
+          <a class="hero-action primary" href="/staff">Открыть очередь</a>
+          <a class="hero-action" href="#voice-flow">Посмотреть сценарий</a>
+        </div>
+      </div>
+      <div class="hero-media">
+        <img src="/static/images/bar-red.jpg" alt="Бар с глубоким красным светом и бутылками на полках">
+        <div class="voice-orb" aria-label="Пример распознавания голоса">
+          <strong>«Два мохито без льда»</strong>
+          <span>Речь распознана, позиции найдены в меню</span>
+          <div class="wave" aria-hidden="true">
+            <i style="--wave:18px;--delay:.1"></i><i style="--wave:32px;--delay:.3"></i><i style="--wave:24px;--delay:.5"></i><i style="--wave:38px;--delay:.2"></i><i style="--wave:20px;--delay:.7"></i><i style="--wave:30px;--delay:.4"></i><i style="--wave:16px;--delay:.6"></i><i style="--wave:35px;--delay:.2"></i><i style="--wave:22px;--delay:.8"></i><i style="--wave:28px;--delay:.5"></i>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="story" id="voice-flow">
+      <h2>Заказ звучит естественно. Система работает точно.</h2>
+      <div class="story-grid">
+        <div class="story-photo">
+          <img src="/static/images/bar-candles.jpg" alt="Барная полка при свете свечей и красной подсветке" loading="lazy">
+        </div>
+        <div class="story-steps">
+          <article class="story-step"><strong>Гость говорит</strong><p>Telegram принимает короткое голосовое сообщение на русском или английском.</p></article>
+          <article class="story-step"><strong>AI сверяет меню</strong><p>Whisper распознаёт речь, а локальные правила находят напитки, количество и добавки.</p></article>
+          <article class="story-step"><strong>Человек подтверждает</strong><p>Гость проверяет результат. Неизвестный напиток уходит бармену отдельным запросом.</p></article>
+          <article class="story-step"><strong>Бар готовит</strong><p>Очередь обновляется в реальном времени без цен и лишних действий.</p></article>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="home-footer">
+    <span>Nightshift Voice Bar</span>
+    <span>FastAPI · PostgreSQL · Telegram · OpenRouter</span>
+  </footer>
+</body>
+</html>

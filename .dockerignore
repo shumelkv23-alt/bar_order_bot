@@ -1,0 +1,14 @@
+.env
+.venv
+.venv-miniapp
+.pip-cache
+__pycache__
+*.pyc
+*.db
+.pytest_cache
+.ruff_cache
+tests
+output
+miniapp/node_modules
+miniapp/dist
+miniapp/.npm-cache

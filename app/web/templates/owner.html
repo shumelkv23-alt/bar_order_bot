@@ -1,0 +1,28 @@
+{% extends "panel_base.html" %}
+{% block title %}Аналитика{% endblock %}
+{% block panel %}analytics{% endblock %}
+{% block breadcrumb %}Аналитика{% endblock %}
+{% block eyebrow %}ВЕЧЕР В ЦИФРАХ{% endblock %}
+{% block heading %}Аналитика мероприятия{% endblock %}
+{% block description %}Нагрузка команды и то, что выбирают ваши гости.{% endblock %}
+{% block actions %}<button id="refresh" class="icon-button" aria-label="Обновить аналитику">{{ icon('refresh') }}</button><button id="csv" disabled>{{ icon('download') }}Скачать CSV</button><button id="json" class="ghost" disabled>JSON</button>{% endblock %}
+{% block content %}
+  <div class="analytics-toolbar"><label>Мероприятие<select id="event-select"><option value="">Загрузка…</option></select></label><span class="small" id="event-period"></span></div>
+  <div id="analytics-data" aria-busy="true">
+    <section id="metrics" class="metrics-grid" aria-label="Ключевые показатели">
+      <article class="metric"><span>Всего заказов</span><strong>—</strong><small>включая отменённые</small></article>
+      <article class="metric"><span>Единиц в заказах</span><strong>—</strong><small>напитки и еда</small></article>
+      <article class="metric"><span>Гостей</span><strong>—</strong><small>уникальные заказчики</small></article>
+      <article class="metric"><span>В работе</span><strong>—</strong><small>от нового до готового</small></article>
+      <article class="metric"><span>Выполнено</span><strong>—</strong><small>доля выданных заказов</small></article>
+      <article class="metric"><span>Среднее время</span><strong>—</strong><small>от заказа до выдачи</small></article>
+    </section>
+    <div class="analytics-grid">
+      <section class="panel span-2"><div class="panel-header"><div><h2>Ритм мероприятия</h2><p>Заказы по часам</p></div><span class="badge blue">Количество заказов</span></div><div id="timeline" class="timeline"><p class="empty">Выберите мероприятие</p></div><p class="chart-caption" id="timeline-caption">Время в часовом поясе устройства.</p><details class="advanced"><summary>Данные графика в таблице</summary><table class="chart-table"><thead><tr><th scope="col">Дата и час</th><th scope="col">Заказы</th></tr></thead><tbody id="timeline-table"></tbody></table></details></section>
+      <section class="panel"><div class="panel-header"><div><h2>Что выбирают гости</h2><p>Топ-10 позиций по количеству</p></div></div><div id="popular"><p class="empty">Пока нет данных</p></div></section>
+      <section class="panel"><div class="panel-header"><div><h2>Статусы заказов</h2><p>Распределение за всё мероприятие</p></div></div><div id="statuses"><p class="empty">Пока нет данных</p></div><p id="extra-metrics" class="chart-caption"></p></section>
+    </div>
+  </div>
+  <p class="chart-caption">Все показатели учитывают обычные заказы, включая отменённые. Особые запросы в эту сводку не входят.</p>
+{% endblock %}
+{% block scripts %}<script src="/static/analytics-panel.js?v=2" defer></script>{% endblock %}

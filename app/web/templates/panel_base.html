@@ -1,0 +1,45 @@
+{% macro icon(name) -%}<svg class="icon" aria-hidden="true"><use href="/static/panel-icons.svg#{{ name }}"></use></svg>{%- endmacro %}
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#060b1a">
+  <title>{% block title %}Управление баром{% endblock %} · Azati</title>
+  <link rel="stylesheet" href="/static/panels.css?v=3">
+  <link rel="stylesheet" href="/static/panels-azati.css?v=1">
+  <script src="/static/panels.js?v=2" defer></script>
+  {% block scripts %}{% endblock %}
+</head>
+<body data-panel="{% block panel %}{% endblock %}">
+  <a class="skip-link" href="#main">К содержимому</a>
+  <div class="app-shell" id="app-shell" hidden>
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-image"><img src="/static/images/azati-logo-current-light.svg" alt="Azati" width="140" height="35"></span><span class="brand-caption">EVENT BAR</span></div>
+      <span class="nav-caption">Рабочее пространство</span>
+      <nav class="main-nav" aria-label="Панели">
+        <a href="/staff" data-access="staff">{{ icon('queue') }}<span>Очередь заказов</span></a>
+        <a href="/admin" data-access="admin">{{ icon('sliders') }}<span>Управление</span></a>
+        <a href="/owner" data-access="analytics">{{ icon('chart') }}<span>Аналитика</span></a>
+      </nav>
+      <div class="sidebar-bottom"><div class="session-info"><span class="avatar" aria-hidden="true">A</span><div><strong id="session-role"></strong><span>Панель команды</span></div></div><button id="logout" class="ghost">{{ icon('logout') }}Выйти</button></div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar"><span class="breadcrumb">Azati <span>/</span> <b>{% block breadcrumb %}Бар{% endblock %}</b></span><span id="connection" class="connection" role="status">Подключение…</span></header>
+      <main id="main" tabindex="-1">
+        <div class="page-heading"><div><p class="eyebrow">{% block eyebrow %}EVENT OPERATIONS{% endblock %}</p><h1>{% block heading %}{% endblock %}</h1><p class="page-description">{% block description %}{% endblock %}</p></div><div class="heading-actions">{% block actions %}{% endblock %}</div></div>
+        <div id="page-error" class="notice error" role="alert" hidden></div>
+        {% block content %}{% endblock %}
+        <footer class="page-footer"><span>Azati · Event bar</span><span>Всё внимание — гостям.</span></footer>
+      </main>
+    </div>
+  </div>
+  <section id="login-screen" class="login-screen" aria-labelledby="login-title">
+    <div class="login-card"><span class="brand-image"><img src="/static/images/azati-logo-current-light.svg" alt="Azati" width="140" height="35"></span><p class="eyebrow">EVENT BAR / КОМАНДА</p><h1 id="login-title">Добро пожаловать</h1><p>Войдите в рабочее пространство бара.<br>Доступные разделы зависят от вашей роли.</p>
+      <form id="login-form"><label for="access-token">Ключ доступа</label><input id="access-token" type="password" required autocomplete="off" spellcheck="false" placeholder="Введите ключ вашей роли"><p id="login-error" class="field-error" role="alert" hidden></p><button type="submit" class="primary">Войти в панель {{ icon('arrow') }}</button></form><p class="small">Ключ хранится только в этой вкладке. На общем устройстве выходите после работы.</p>
+    </div>
+  </section>
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title"><form method="dialog"><h2 id="confirm-title"></h2><p id="confirm-description"></p><label id="confirm-note-label" hidden>Комментарий гостю<textarea id="confirm-note" maxlength="300" rows="3"></textarea></label><div class="dialog-actions"><button value="cancel" autofocus>Назад</button><button value="confirm" class="primary" id="confirm-submit">Подтвердить</button></div></form></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

@@ -1,0 +1,111 @@
+/* Azati.com visual language adapted for operational dashboards. */
+@font-face {
+  font-family: Manrope;
+  src: url('/static/fonts/manrope-regular.woff2') format('woff2');
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: Manrope;
+  src: url('/static/fonts/manrope-semibold.woff2') format('woff2');
+  font-weight: 600 800;
+  font-display: swap;
+}
+@font-face {
+  font-family: PlusJakarta;
+  src: url('/static/fonts/plus-jakarta-extrabold.woff2') format('woff2');
+  font-weight: 800;
+  font-display: swap;
+}
+
+:root {
+  --bg: #f7f9fa;
+  --surface: #ffffff;
+  --text: #202b38;
+  --muted: #5b6976;
+  --border: #dfe6e9;
+  --interactive: #8795a0;
+  --blue: #167271;
+  --blue-hover: #105f5e;
+  --blue-soft: #e5f2f1;
+  --orange: #ff6e20;
+  --orange-soft: #fff0e8;
+  --danger: #a33131;
+  --danger-soft: #fbecec;
+  --success: #236a56;
+  --success-soft: #e4f3ec;
+  --radius: 12px;
+}
+
+body { font-family: Manrope, 'Segoe UI', system-ui, sans-serif; }
+h1, h2, h3 { color: #101d30; }
+h1 { font-family: PlusJakarta, Manrope, sans-serif; font-weight: 800; letter-spacing: -.045em; }
+button, .button-link, input, select, textarea { border-radius: 8px; }
+button.primary, .button-link.primary { box-shadow: none; font-weight: 600; }
+button.primary:hover, .button-link.primary:hover { background: var(--blue-hover); }
+:focus-visible { outline-color: var(--orange); box-shadow: none; }
+
+.sidebar {
+  background: #060b1a;
+  border-right-color: #1b2c40;
+  color: #f6f8fb;
+}
+.brand-image { width: 142px; height: 37px; overflow: visible; }
+.brand-image img { width: 142px; height: 36px; transform: none; object-fit: contain; }
+.brand-caption { color: #b5c7d4; letter-spacing: .2em; }
+.nav-caption { color: #8fa6ba; text-transform: uppercase; letter-spacing: .08em; }
+.main-nav a { color: #b5c7d4; border: 1px solid transparent; }
+.main-nav a:hover { color: #fff; background: #132236; }
+.main-nav a[aria-current=page] { color: #fff; background: #174c4e; border-color: #2e8580; }
+.main-nav a[aria-current=page] .icon { color: #60c4ba; }
+.session-info { border-top-color: #26374c; }
+.session-info span:not(.avatar) { color: #9fb0c0; }
+.avatar { color: #fff; background: #166865; }
+.sidebar-bottom button { color: #c1d0da; }
+.sidebar-bottom button:hover { background: #132236; }
+
+.topbar { background: var(--surface); }
+.breadcrumb { color: var(--muted); }
+.breadcrumb b { color: #152439; font-weight: 600; }
+.page-heading { margin-bottom: 28px; }
+.eyebrow { color: #b34a14; font-weight: 700; letter-spacing: .18em; }
+.page-description { max-width: 64ch; }
+.panel, .order-card { box-shadow: 0 2px 12px rgba(7, 23, 40, .04); }
+.panel-header h2 { letter-spacing: -.025em; }
+.order-number { font-family: PlusJakarta, Manrope, sans-serif; font-weight: 800; }
+.column-heading { border-bottom-width: 2px; }
+.column[data-status=submitted] .column-heading { border-bottom-color: var(--blue); }
+.column[data-status=preparing] .column-heading { border-bottom-color: var(--orange); }
+.event-strip { border-top: 2px solid var(--orange); background: #fff; padding: 15px 18px; margin-bottom: 18px; border-radius: 0 0 10px 10px; }
+.section-tabs button[aria-selected=true] { font-weight: 700; }
+.segmented { background: #eef3f4; }
+.segmented button[aria-pressed=true] { font-weight: 700; }
+.badge.orange { color: #a7420b; }
+.order-card.warning { border-top-color: var(--orange); }
+.order-comment { border-left-color: var(--orange); background: #fff5ee; }
+.special-zone summary::before { color: var(--orange); }
+.metric strong, .rank-row strong { color: var(--blue); }
+.page-footer { border-top: 1px solid var(--border); margin-top: 32px; padding-top: 16px; }
+
+.login-screen { background: #060b1a; color: #f7f9fc; }
+.login-card { max-width: 460px; padding: 32px; border: 1px solid #304157; border-radius: 16px; background: #111c2d; box-shadow: 0 18px 60px rgba(0,0,0,.18); }
+.login-card > .brand-image { margin-bottom: 32px; }
+.login-card h1 { color: #fff; }
+.login-card .eyebrow { color: #ff9a61; }
+.login-card p:not(.eyebrow), .login-card .small { color: #bac9d8; }
+.login-card input { background: #1c2b3e; border-color: #526276; color: #fff; }
+.login-card input::placeholder { color: #b9c7d7; }
+.login-card label { color: #eaf0f7; }
+.login-card button.primary { background: var(--blue); border-color: #55bcb4; }
+
+@media (max-width: 900px) {
+  .sidebar { border-bottom-color: #1b2c40; }
+  .brand-image { width: 112px; height: 30px; }
+  .brand-image img { width: 112px; height: 29px; }
+}
+@media (max-width: 599px) {
+  .main-nav a { color: #d0dbe5; }
+  .main-nav a[aria-current=page] { color: #fff; }
+  .event-strip { padding: 14px; }
+  .login-card { padding: 24px; }
+}
