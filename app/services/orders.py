@@ -648,8 +648,8 @@ async def submit_cart(
     if existing:
         raise ConflictError(f"У вас уже есть активный заказ {existing.public_number}")
 
-    has_prior_order = await session.scalar(
-        select(Order.id).where(Order.user_id == user_id, Order.event_id == event_id).limit(1)
+    prior_order_count = await session.scalar(
+        select(func.count(Order.id)).where(Order.user_id == user_id, Order.event_id == event_id)
     )
 
     cart = await get_or_create_cart(session, user_id, event_id, for_update=True)
@@ -718,6 +718,24 @@ async def submit_cart(
         comment=comment,
         idempotency_key=idempotency_key,
     )
+    ordered_distinct_items = len({item.menu_item_id for item in cart.items})
+    has_personal_touch = any(item.selected_modifiers for item in cart.items)
+    has_alcohol_free_drink = any(
+        (item.menu_item.taste_profile or {}).get("item_type") != "food"
+        and (
+            not item.menu_item.is_alcoholic
+            or any(
+                modifier.get("kind") == "variant"
+                and (
+                    "безалкоголь" in modifier.get("name_ru", "").casefold()
+                    or "alcohol-free" in modifier.get("name_en", "").casefold()
+                    or "non-alcoholic" in modifier.get("name_en", "").casefold()
+                )
+                for modifier in item.selected_modifiers
+            )
+        )
+        for item in cart.items
+    )
     for cart_item in cart.items:
         order.items.append(
             OrderItem(
@@ -748,9 +766,20 @@ async def submit_cart(
             order.status, order.auto_queue_size_snapshot, sum(item.quantity for item in order.items)
         )
     new_achievements = []
-    if has_prior_order is None:
-        if await award_achievement(session, event_id, user_id, "first_contact"):
-            new_achievements.append("first_contact")
+    eligible_achievements = []
+    if prior_order_count == 0:
+        eligible_achievements.append("first_contact")
+    if has_personal_touch:
+        eligible_achievements.append("personal_touch")
+    if has_alcohol_free_drink:
+        eligible_achievements.append("clear_head")
+    if ordered_distinct_items >= 3:
+        eligible_achievements.append("flavor_trio")
+    if prior_order_count >= 2:
+        eligible_achievements.append("regular")
+    for code in eligible_achievements:
+        if await award_achievement(session, event_id, user_id, code):
+            new_achievements.append(code)
     await session.commit()
     created = await get_order(session, order.id)
     return (created, True, new_achievements) if return_creation else created
@@ -917,7 +946,7 @@ async def repeat_order_to_cart(
     *,
     expected_cart_fingerprint: str,
     replace_existing: bool,
-) -> tuple[Cart, str]:
+) -> tuple[Cart, str, bool]:
     """Replace the cart with a current, validated copy of one past order."""
     event = await session.scalar(
         select(Event)
@@ -972,8 +1001,9 @@ async def repeat_order_to_cart(
         raise ConflictError("Подтвердите замену корзины")
     cart.items.clear()
     cart.items.extend(repeated_items)
+    awarded = await award_achievement(session, event_id, user_id, "encore")
     await session.commit()
-    return await get_or_create_cart(session, user_id, event_id), source.comment
+    return await get_or_create_cart(session, user_id, event_id), source.comment, awarded
 
 
 async def list_staff_orders(

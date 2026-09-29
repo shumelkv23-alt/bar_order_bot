@@ -5,7 +5,7 @@ import { initTelegram, telegram } from './telegram'
 
 type Screen = 'menu' | 'mystery' | 'secret' | 'top' | 'profile' | 'cart' | 'item' | 'order'
 type Draft = { item: MenuItem; origin: 'menu' | 'mystery' | 'secret' | 'cart'; cartItemId?: number; quantity: number; modifierIds: number[]; comment: string; expectedQuantity?: number }
-type MysteryResult = { item: MenuItem; can_reroll: boolean; discovery_token: string }
+type MysteryResult = { item: MenuItem; can_reroll: boolean; discovery_token: string; new_achievement: string | null }
 
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
   return <svg width={size} height={size} aria-hidden="true" className="icon"><use href={`/static/panel-icons.svg#${name}`} /></svg>
@@ -36,7 +36,12 @@ export function App() {
   const [achievements, setAchievements] = useState<Achievements | null>(null)
   const [secretMenu, setSecretMenu] = useState<SecretMenu | null>(null)
   const [secretAnswers, setSecretAnswers] = useState<Record<number, string>>({})
-  const [newBadge, setNewBadge] = useState<string | null>(null)
+  const [badgeQueue, setBadgeQueue] = useState<string[]>([])
+  const newBadge = badgeQueue[0] || null
+  const announceBadges = (codes: (string | null | undefined)[]) => {
+    const earned = codes.filter((code): code is string => Boolean(code))
+    if (earned.length) setBadgeQueue(current => [...current, ...earned])
+  }
   const [quizFeedback, setQuizFeedback] = useState<boolean | null>(null)
   const [screen, setScreen] = useState<Screen>('menu')
   const [draft, setDraft] = useState<Draft | null>(null)
@@ -139,9 +144,9 @@ export function App() {
 
   useEffect(() => {
     if (!newBadge) return
-    const timer = window.setTimeout(() => setNewBadge(null), 4000)
+    const timer = window.setTimeout(() => setBadgeQueue(current => current.slice(1)), 4000)
     return () => window.clearTimeout(timer)
-  }, [newBadge])
+  }, [badgeQueue, newBadge])
 
   const goBack = useCallback(() => {
     setError('')
@@ -227,7 +232,7 @@ export function App() {
         comment: orderComment, idempotency_key: requestKey.current,
       })
       setOrder(created)
-      if (created.new_achievements?.length) setNewBadge(created.new_achievements[0])
+      announceBadges(created.new_achievements || [])
       setScreen('order')
       setCart({ id: cart?.id || 0, event_id: cart?.event_id || 0, items: [], total_quantity: 0, fingerprint: '' })
       requestKey.current = null
@@ -241,6 +246,7 @@ export function App() {
         category_id: mysteryCategoryId, exclude_menu_item_id: mystery?.item.id,
       })
       setMystery(result)
+      announceBadges([result.new_achievement])
     })
   }
 
@@ -248,7 +254,7 @@ export function App() {
     if (!mystery) return
     void run(async () => {
       const result = await api<{ new_achievement: string | null }>('/achievements/discover', initData, 'POST', { token: mystery.discovery_token })
-      if (result.new_achievement) setNewBadge(result.new_achievement)
+      announceBadges([result.new_achievement])
       if (achievements) await refreshAchievements()
     })
   }
@@ -257,7 +263,7 @@ export function App() {
     void run(async () => {
       const result = await api<{ correct: boolean; new_achievement: string | null }>('/achievements/quiz', initData, 'POST', { answer })
       setQuizFeedback(result.correct)
-      if (result.new_achievement) setNewBadge(result.new_achievement)
+      announceBadges([result.new_achievement])
       if (result.correct) await refreshAchievements()
     })
   }
@@ -267,6 +273,7 @@ export function App() {
       const updated = await api<SecretOffer>(`/secret-menu/${offer.id}/unlock`, initData, 'POST', { answer: secretAnswers[offer.id] || '' })
       setSecretMenu(current => current ? { offers: current.offers.map(row => row.id === offer.id ? updated : row) } : current)
       setSecretAnswers(current => ({ ...current, [offer.id]: '' }))
+      announceBadges([updated.new_achievement])
     })
   }
 
@@ -309,6 +316,7 @@ export function App() {
       } catch (cause) { setRepeatConfirmOpen(false); throw cause }
       setCart(repeated.cart)
       setOrderComment(repeated.order_comment)
+      announceBadges([repeated.new_achievement])
       setRepeatConfirmOpen(false)
       requestKey.current = null
       setScreen('cart')
@@ -319,7 +327,12 @@ export function App() {
     {repeatConfirmOpen && <p className="repeat-warning">{t.repeatReplaceWarning}</p>}
     <div className="repeat-actions"><button className="button button--secondary" disabled={busy || !canOrder} onClick={repeatPreviousOrder}>{repeatConfirmOpen ? t.replaceCart : t.repeatOrder}</button>{repeatConfirmOpen && <button className="link-button" onClick={() => setRepeatConfirmOpen(false)}>{t.back}</button>}</div>
   </section>
-  const badgeNames: Record<string, string> = { first_contact: t.firstContact, pathfinder: t.pathfinder, connoisseur: t.connoisseur }
+  const badgeNames: Record<string, string> = {
+    first_contact: t.firstContact, pathfinder: t.pathfinder, connoisseur: t.connoisseur,
+    lucky_draw: t.luckyDraw, encore: t.encore, inner_circle: t.innerCircle,
+    personal_touch: t.personalTouch, clear_head: t.clearHead,
+    flavor_trio: t.flavorTrio, regular: t.regular,
+  }
 
   return <div className="app-shell">
     <header className="app-header">
@@ -429,7 +442,7 @@ export function App() {
       {screen === 'profile' && <>
         <h2 className="screen-title">{t.profile}</h2>
         <p className="section-intro">{bootstrap.user.display_name} · {event.name}</p>
-        <div className="section-heading"><h2>{t.achievements}</h2><span>{achievements?.achievements.filter(badge => badge.awarded_at).length || 0} / {achievements?.achievements.length || 3}</span></div>
+        <div className="section-heading"><h2>{t.achievements}</h2><span>{achievements?.achievements.filter(badge => badge.awarded_at).length || 0} / {achievements?.achievements.length || 10}</span></div>
         {!achievements ? <div className="skeleton skeleton-item" /> : <div className="achievement-grid">{achievements.achievements.map(badge => <div className={`achievement-card ${badge.awarded_at ? 'achievement-card--earned' : ''}`} key={badge.code}>
           <span className="achievement-symbol" aria-hidden="true">{badge.symbol}</span><div><strong>{badge.name}</strong><p>{badge.description}</p>{badge.awarded_at && <small>{t.earned}</small>}</div>
         </div>)}</div>}

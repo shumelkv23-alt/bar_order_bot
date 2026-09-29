@@ -26,6 +26,34 @@ ACHIEVEMENTS = (
         "connoisseur", "Знаток", "Connoisseur",
         "Ответить на вопрос викторины", "Answer the quiz question", "◆",
     ),
+    (
+        "lucky_draw", "Счастливый случай", "Lucky draw",
+        "Открыть случайную позицию в Мистери", "Reveal a random Mystery item", "✳",
+    ),
+    (
+        "encore", "На бис", "Encore",
+        "Скопировать прошлый заказ в корзину", "Copy a past order into the cart", "↻",
+    ),
+    (
+        "inner_circle", "Тайный круг", "Inner circle",
+        "Открыть секретную позицию", "Unlock a secret menu item", "☾",
+    ),
+    (
+        "personal_touch", "Особый штрих", "Personal touch",
+        "Заказать позицию со своей настройкой", "Order an item with a custom option", "✎",
+    ),
+    (
+        "clear_head", "Ясная голова", "Clear head",
+        "Заказать напиток без алкоголя", "Order an alcohol-free drink", "◌",
+    ),
+    (
+        "flavor_trio", "Три вкуса", "Three flavors",
+        "Заказать три разные позиции за раз", "Order three different items at once", "△",
+    ),
+    (
+        "regular", "Завсегдатай", "Regular",
+        "Отправить третий заказ за вечер", "Place a third order this evening", "★",
+    ),
 )
 
 

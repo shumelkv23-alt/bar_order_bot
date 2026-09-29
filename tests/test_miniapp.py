@@ -325,6 +325,7 @@ async def test_repeat_order_replaces_cart_only_when_every_line_is_available(mini
     )).status_code == 409
     repeated = await client.post(repeat_url, headers=headers, json=replace_request)
     assert repeated.status_code == 200
+    assert repeated.json()["new_achievement"] == "encore"
     assert repeated.json()["order_comment"] == "Serve together"
     assert [
         (item["menu_item_id"], item["quantity"], item["modifier_ids"], item["comment"])
@@ -338,6 +339,7 @@ async def test_repeat_order_replaces_cart_only_when_every_line_is_available(mini
         "replace_existing": True,
     })
     assert retry.status_code == 200
+    assert retry.json()["new_achievement"] is None
     assert retry.json()["cart"]["total_quantity"] == 3
     assert len(retry.json()["cart"]["items"]) == 2
 
@@ -348,7 +350,8 @@ async def test_achievements_are_awarded_once_and_kept_in_profile(miniapp_client)
     profile_url = "/api/v1/miniapp/achievements"
     first_profile = (await client.get(profile_url, headers=headers)).json()
     assert {badge["code"] for badge in first_profile["achievements"]} == {
-        "first_contact", "pathfinder", "connoisseur"
+        "first_contact", "pathfinder", "connoisseur", "lucky_draw", "encore",
+        "inner_circle", "personal_touch", "clear_head", "flavor_trio", "regular",
     }
     assert all(badge["awarded_at"] is None for badge in first_profile["achievements"])
 
@@ -360,6 +363,7 @@ async def test_achievements_are_awarded_once_and_kept_in_profile(miniapp_client)
     assert repeated.json()["new_achievement"] is None
 
     mystery = await client.post("/api/v1/miniapp/mystery/generate", headers=headers, json={})
+    assert mystery.json()["new_achievement"] == "lucky_draw"
     token = mystery.json()["discovery_token"]
     assert (await client.post(
         f"{profile_url}/discover", headers=headers, json={"token": "forged"}
@@ -392,11 +396,121 @@ async def test_achievements_are_awarded_once_and_kept_in_profile(miniapp_client)
     assert retry.json()["new_achievements"] == []
 
     final_profile = (await client.get(profile_url, headers=headers)).json()
-    assert all(badge["awarded_at"] for badge in final_profile["achievements"])
+    assert {badge["code"] for badge in final_profile["achievements"] if badge["awarded_at"]} == {
+        "first_contact", "pathfinder", "connoisseur", "lucky_draw",
+    }
     other_profile = (await client.get(
         profile_url, headers={"X-Telegram-Init-Data": signed_data(404)}
     )).json()
     assert all(badge["awarded_at"] is None for badge in other_profile["achievements"])
+
+
+async def test_order_achievements_cover_custom_drink_variety_and_third_order(miniapp_client):
+    client, factory = miniapp_client
+    headers = {"X-Telegram-Init-Data": signed_data(304)}
+    categories = (await client.get("/api/v1/miniapp/menu", headers=headers)).json()[
+        "categories"
+    ]
+    products = [item for category in categories for item in category["items"]]
+    custom = next(item for item in products if item["is_alcoholic"] and item["modifiers"])
+    alcohol_free = next(
+        item for category in categories if category["name"] == "Non-alcoholic"
+        for item in category["items"]
+    )
+    third = next(
+        item for item in products if item["id"] not in {custom["id"], alcohol_free["id"]}
+    )
+    for item, modifier_ids in (
+        (custom, [custom["modifiers"][0]["id"]]),
+        (alcohol_free, []),
+        (third, []),
+    ):
+        added = await client.post(
+            "/api/v1/miniapp/cart/items", headers=headers,
+            json={"menu_item_id": item["id"], "quantity": 1,
+                  "modifier_ids": modifier_ids},
+        )
+        assert added.status_code == 200
+    first = await client.post(
+        "/api/v1/miniapp/orders", headers=headers,
+        json={"idempotency_key": str(uuid4())},
+    )
+    assert first.status_code == 200
+    assert first.json()["new_achievements"] == [
+        "first_contact", "personal_touch", "clear_head", "flavor_trio",
+    ]
+
+    async with factory() as session:
+        await transition_order(session, first.json()["id"], OrderStatus.CANCELLED,
+                               actor="test")
+    for index in range(2):
+        await client.post(
+            "/api/v1/miniapp/cart/items", headers=headers,
+            json={"menu_item_id": custom["id"], "quantity": 1},
+        )
+        order = await client.post(
+            "/api/v1/miniapp/orders", headers=headers,
+            json={"idempotency_key": str(uuid4())},
+        )
+        assert order.status_code == 200
+        assert order.json()["new_achievements"] == (["regular"] if index else [])
+        if index == 0:
+            async with factory() as session:
+                await transition_order(session, order.json()["id"], OrderStatus.CANCELLED,
+                                       actor="test")
+
+    earned = (await client.get("/api/v1/miniapp/achievements", headers=headers)).json()
+    assert {badge["code"] for badge in earned["achievements"] if badge["awarded_at"]} == {
+        "first_contact", "personal_touch", "clear_head", "flavor_trio", "regular",
+    }
+
+
+async def test_alcohol_free_variant_and_null_taste_profile_earn_clear_head(miniapp_client):
+    client, factory = miniapp_client
+    variant_headers = {"X-Telegram-Init-Data": signed_data(305)}
+    menu = (await client.get("/api/v1/miniapp/menu", headers=variant_headers)).json()
+    categories = menu["categories"]
+    mojito = next(
+        item for category in categories for item in category["items"]
+        if item["name"] == "Mojito"
+    )
+    alcohol_free_variant = next(
+        modifier for modifier in mojito["modifiers"]
+        if modifier["name"] == "Alcohol-free version"
+    )
+    await client.post(
+        "/api/v1/miniapp/cart/items", headers=variant_headers,
+        json={"menu_item_id": mojito["id"], "quantity": 1,
+              "modifier_ids": [alcohol_free_variant["id"]]},
+    )
+    variant_order = await client.post(
+        "/api/v1/miniapp/orders", headers=variant_headers,
+        json={"idempotency_key": str(uuid4())},
+    )
+    assert variant_order.status_code == 200
+    assert variant_order.json()["new_achievements"] == [
+        "first_contact", "personal_touch", "clear_head",
+    ]
+
+    plain = next(
+        item for category in categories if category["name"] == "Non-alcoholic"
+        for item in category["items"]
+    )
+    async with factory() as session:
+        product = await session.get(MenuItem, plain["id"])
+        product.taste_profile = None
+        await session.commit()
+    plain_headers = {"X-Telegram-Init-Data": signed_data(306)}
+    await client.post(
+        "/api/v1/miniapp/cart/items", headers=plain_headers,
+        json={"menu_item_id": plain["id"], "quantity": 1},
+    )
+    plain_order = await client.post(
+        "/api/v1/miniapp/orders", headers=plain_headers,
+        json={"idempotency_key": str(uuid4())},
+    )
+    assert plain_order.status_code == 200
+    assert plain_order.json()["new_achievements"] == ["first_contact", "clear_head"]
 
 
 async def test_secret_menu_unlock_window_stock_and_cancellation(miniapp_client):
@@ -447,6 +561,7 @@ async def test_secret_menu_unlock_window_stock_and_cancellation(miniapp_client):
         json={"answer": "  МЯТА  "},
     )).json()
     assert revealed["item"]["id"] == item_id
+    assert revealed["new_achievement"] == "inner_circle"
     second_offer = (await client.get(secret_url, headers=second_headers)).json()["offers"][0]
     assert second_offer["item"] is None
     second_unlock = await client.post(

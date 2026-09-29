@@ -11,7 +11,7 @@ export type CartItem = {
   modifier_ids: number[]; modifiers: string[]; comment: string
 }
 export type Cart = { id: number; event_id: number; items: CartItem[]; total_quantity: number; fingerprint: string }
-export type RepeatOrderResult = { cart: Cart; order_comment: string }
+export type RepeatOrderResult = { cart: Cart; order_comment: string; new_achievement: string | null }
 export type Order = {
   id: number; public_number: string; status: string; version: number; created_at: string
   status_automatically: boolean; completed_automatically: boolean
@@ -28,7 +28,7 @@ export type Achievements = {
 export type SecretOffer = {
   id: number; riddle: string; available_from: string; available_until: string
   remaining: number; available: boolean; unavailable_reason: 'sold_out' | 'upcoming' | 'unavailable' | null
-  unlocked: boolean; item: MenuItem | null
+  unlocked: boolean; item: MenuItem | null; new_achievement?: string | null
 }
 export type SecretMenu = { offers: SecretOffer[] }
 export type Bootstrap = {

@@ -421,8 +421,12 @@ async def unlock_secret(
         if not answer_matches(offer, payload.answer):
             raise ValidationError("Неверный ответ на загадку")
         await unlock_offer(session, offer.id, user.id)
+        awarded = await award_achievement(session, event.id, user.id, "inner_circle")
         await session.commit()
-        return await _secret_view(session, offer, user)
+        return {
+            **(await _secret_view(session, offer, user)),
+            "new_achievement": "inner_circle" if awarded else None,
+        }
     except DomainError as exc:
         raise _error(exc, user.language) from exc
 
@@ -510,12 +514,16 @@ async def repeat_order(order_id: int, payload: RepeatOrder, session: Session, us
     _rate_limit(user.id, "repeat_order", 10)
     try:
         event = await get_active_event(session)
-        cart, order_comment = await repeat_order_to_cart(
+        cart, order_comment, awarded = await repeat_order_to_cart(
             session, user.id, event.id, order_id,
             expected_cart_fingerprint=payload.expected_cart_fingerprint,
             replace_existing=payload.replace_existing,
         )
-        return {"cart": _cart_view(cart, user.language), "order_comment": order_comment}
+        return {
+            "cart": _cart_view(cart, user.language),
+            "order_comment": order_comment,
+            "new_achievement": "encore" if awarded else None,
+        }
     except DomainError as exc:
         raise _error(exc, user.language) from exc
 
@@ -628,12 +636,15 @@ async def mystery(payload: MysteryRequest, session: Session, user: Guest) -> dic
                 entry for entry in entries if entry.menu_item_id != payload.exclude_menu_item_id
             ]
         chosen = secrets.choice(entries)
+        awarded = await award_achievement(session, event.id, user.id, "lucky_draw")
+        await session.commit()
         return {
             "item": _item_view(chosen, user.language),
             "can_reroll": can_reroll,
             "discovery_token": discovery_token(
                 event.id, user.id, chosen.menu_item_id, get_settings().bot_token or ""
             ),
+            "new_achievement": "lucky_draw" if awarded else None,
         }
     except DomainError as exc:
         raise _error(exc, user.language) from exc
