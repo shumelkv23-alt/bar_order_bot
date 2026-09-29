@@ -122,6 +122,23 @@ async def request_logging(request: Request, call_next):
             status_code=410,
             headers={"Cache-Control": "no-store"},
         )
+    if request.url.path == "/api/v1/miniapp/secret-menu/quiz":
+        maximum = 4096
+        declared = request.headers.get("content-length")
+        if declared is not None:
+            try:
+                if int(declared) > maximum:
+                    return JSONResponse({"detail": "Quiz request is too large"}, status_code=413)
+            except ValueError:
+                return JSONResponse({"detail": "Invalid content length"}, status_code=400)
+        chunks = []
+        size = 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > maximum:
+                return JSONResponse({"detail": "Quiz request is too large"}, status_code=413)
+            chunks.append(chunk)
+        request._body = b"".join(chunks)
     request_id = request.headers.get("X-Request-ID", "")[:100] or str(uuid4())
     started = perf_counter()
     try:

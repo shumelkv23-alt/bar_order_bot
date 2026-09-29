@@ -44,12 +44,12 @@ from app.services.orders import (
     update_cart_item_details,
 )
 from app.services.secret_menu import (
-    answer_matches,
     as_utc,
     offer_available,
     unlock_offer,
     user_has_unlock,
 )
+from app.services.secret_quiz import QUESTIONS, grade_answers, public_questions
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/miniapp", tags=["miniapp"])
@@ -120,8 +120,8 @@ class DiscoveryProof(BaseModel):
     token: str = Field(min_length=1, max_length=200)
 
 
-class SecretAnswer(BaseModel):
-    answer: str = Field(min_length=1, max_length=120)
+class SecretQuizAnswers(BaseModel):
+    answers: dict[str, str] = Field(min_length=len(QUESTIONS), max_length=len(QUESTIONS))
 
 
 def _english_error(exc: DomainError) -> str:
@@ -174,6 +174,7 @@ def _english_error(exc: DomainError) -> str:
             "This secret item sold out. Refresh your cart"
         ),
         "Неверный ответ на загадку": "That answer does not solve the riddle",
+        "Ответьте на все вопросы викторины": "Answer every quiz question",
     }
     return translations.get(message, "Please refresh and try again")
 
@@ -389,6 +390,10 @@ async def secret_menu(session: Session, user: Guest) -> dict:
         event = await get_active_event(session)
     except DomainError as exc:
         raise _error(exc, user.language) from exc
+    return await _secret_menu_view(session, event, user)
+
+
+async def _secret_menu_view(session: Session, event, user: Guest) -> dict:
     offers = (await session.scalars(select(SecretOffer).where(
         SecretOffer.event_id == event.id,
         SecretOffer.is_active.is_(True),
@@ -398,33 +403,50 @@ async def secret_menu(session: Session, user: Guest) -> dict:
         "offers": [
             await _secret_view(session, offer, user, orders_enabled=event.orders_enabled)
             for offer in offers
-        ]
+        ],
+        "quiz": public_questions(user.language),
     }
 
 
-@router.post("/secret-menu/{offer_id}/unlock")
-async def unlock_secret(
-    offer_id: int, payload: SecretAnswer, session: Session, user: Guest
-) -> dict:
-    _rate_limit(user.id, "secret_answer", 8)
+@router.post("/secret-menu/quiz")
+async def solve_secret_quiz(payload: SecretQuizAnswers, session: Session, user: Guest) -> dict:
+    _rate_limit(user.id, "secret_quiz", 8)
     try:
         event = await get_active_event(session)
         if not event.orders_enabled:
             raise ConflictError("Приём заказов сейчас закрыт")
-        offer = await session.scalar(select(SecretOffer).where(
-            SecretOffer.id == offer_id, SecretOffer.event_id == event.id
-        ))
-        if offer is None:
-            raise NotFoundError("Секретная позиция недоступна")
-        if not (await _secret_view(session, offer, user))["available"]:
+        offers = (await session.scalars(select(SecretOffer).where(
+            SecretOffer.event_id == event.id,
+            SecretOffer.is_active.is_(True),
+            SecretOffer.available_until > datetime.now(UTC),
+            SecretOffer.portions_used < SecretOffer.portions_total,
+        ))).all()
+        eligible = []
+        for offer in offers:
+            entry = await session.scalar(select(EventMenuItem).where(
+                EventMenuItem.event_id == event.id,
+                EventMenuItem.menu_item_id == offer.menu_item_id,
+                EventMenuItem.is_available.is_(True),
+            ))
+            if entry and not offer.menu_item.is_archived and offer.menu_item.category.is_active:
+                eligible.append(offer)
+        if not eligible:
             raise ConflictError("Секретная позиция недоступна")
-        if not answer_matches(offer, payload.answer):
-            raise ValidationError("Неверный ответ на загадку")
-        await unlock_offer(session, offer.id, user.id)
+        try:
+            score = grade_answers(payload.answers)
+        except ValueError as exc:
+            raise ValidationError("Ответьте на все вопросы викторины") from exc
+        if score < len(QUESTIONS):
+            return {"correct": False, "score": score, "total": len(QUESTIONS)}
+        for offer in eligible:
+            await unlock_offer(session, offer.id, user.id)
         awarded = await award_achievement(session, event.id, user.id, "inner_circle")
         await session.commit()
         return {
-            **(await _secret_view(session, offer, user)),
+            "correct": True,
+            "score": score,
+            "total": len(QUESTIONS),
+            "menu": await _secret_menu_view(session, event, user),
             "new_achievement": "inner_circle" if awarded else None,
         }
     except DomainError as exc:

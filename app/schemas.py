@@ -1,3 +1,4 @@
+import secrets
 from datetime import UTC, datetime
 from typing import Any
 
@@ -150,9 +151,11 @@ class AvailabilityUpdate(BaseModel):
 class SecretOfferCreate(BaseModel):
     event_id: int
     menu_item_id: int
-    riddle_ru: str = Field(min_length=1, max_length=500)
-    riddle_en: str = Field(min_length=1, max_length=500)
-    answer: str = Field(min_length=1, max_length=120)
+    riddle_ru: str = Field(default="Викторина вечера", min_length=1, max_length=500)
+    riddle_en: str = Field(default="Tonight's quiz", min_length=1, max_length=500)
+    answer: str = Field(
+        default_factory=lambda: secrets.token_urlsafe(24), min_length=1, max_length=120
+    )
     available_from: datetime
     available_until: datetime
     portions_total: int = Field(ge=1, le=10000)

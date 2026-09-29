@@ -3,7 +3,7 @@
   const state = {events:[],categories:[],modifiers:[],items:[],secrets:[],activeEvent:null,activeMenu:[]};
   const sections = {
     menu:['Меню мероприятия','Быстро меняйте доступность. Стоп-лист действует только на активном мероприятии.','Новая позиция'],
-    secrets:['Секретное меню','Загадки, интервалы доступности и лимиты порций по мероприятиям.','Новая загадка'],
+    secrets:['Секретное меню','Позиции, которые гости открывают викториной. Задайте время доступности и лимит порций.','Новая секретная позиция'],
     events:['Мероприятия','Одна активная смена. Остальные мероприятия сохраняют свою историю.','Новое мероприятие'],
     items:['Каталог','Все напитки и еда. Архив скрывает позицию во всех гостевых меню.','Новая позиция'],
     categories:['Категории','Группы позиций и их порядок в меню.','Новая категория'],
@@ -38,7 +38,7 @@
   }
   function row(item) {
     const edit=`<button class="row-action" data-edit="${item.id}">Изменить ${icon('arrow')}</button>`;
-    if(section==='secrets')return `<article class="data-row"><div><strong>${esc(item.item_name)}</strong><p>${esc(item.riddle_ru)}</p><small>${esc(Panel.date(item.available_from))} — ${esc(Panel.date(item.available_until))} · ${item.portions_total-item.portions_used} из ${item.portions_total} порций · событие #${item.event_id}</small></div><span class="badge ${item.is_active?'green':'orange'}">${item.is_active?'Активна':'Выключена'}</span>${edit}</article>`;
+    if(section==='secrets')return `<article class="data-row"><div><strong>${esc(item.item_name)}</strong><p>Открывается викториной</p><small>${esc(Panel.date(item.available_from))} — ${esc(Panel.date(item.available_until))} · ${item.portions_total-item.portions_used} из ${item.portions_total} порций · событие #${item.event_id}</small></div><span class="badge ${item.is_active?'green':'orange'}">${item.is_active?'Активна':'Выключена'}</span>${edit}</article>`;
     if(section==='events')return `<article class="data-row"><div><strong>${esc(item.name)}</strong><p>${esc(Panel.date(item.starts_at))} — ${esc(Panel.date(item.ends_at))}</p><small>${esc(item.code)} · ${item.menu_items_count} позиций</small></div><span class="badge ${item.status==='active'?'green':''}">${labels[item.status] || esc(item.status)}</span><div class="toolbar">${edit}<button class="row-action ${item.status==='active'?'danger':''}" data-event-action="${item.status==='active'?'close':'activate'}" data-id="${item.id}">${item.status==='active'?'Закрыть':'Активировать'}</button></div></article>`;
     if(section==='categories'||section==='modifiers')return `<article class="data-row"><div><strong>${esc(item.name_ru)}</strong><p>${esc(item.name_en)}${section==='modifiers'?' · '+esc(({ice:'Лёд',extra:'Добавка',variant:'Вариант'})[item.kind] || item.kind):''}</p></div><span class="badge ${item.is_active?'green':''}">${item.is_active?'Активна':'Выключена'}</span>${edit}</article>`;
     const catalogItem=section==='menu' ? state.items.find(row=>row.id===item.id) || item : item;

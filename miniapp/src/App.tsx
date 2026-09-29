@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, ApiError, type Achievements, type Bootstrap, type Cart, type CartItem, type Language, type Leaderboard, type Menu, type MenuItem, type Order, type RepeatOrderResult, type SecretMenu, type SecretOffer } from './api'
+import { api, ApiError, type Achievements, type Bootstrap, type Cart, type CartItem, type Language, type Leaderboard, type Menu, type MenuItem, type Order, type RepeatOrderResult, type SecretMenu, type SecretQuizResult } from './api'
 import { copy } from './i18n'
 import { initTelegram, telegram } from './telegram'
 
@@ -35,7 +35,8 @@ export function App() {
   const [board, setBoard] = useState<Leaderboard | null>(null)
   const [achievements, setAchievements] = useState<Achievements | null>(null)
   const [secretMenu, setSecretMenu] = useState<SecretMenu | null>(null)
-  const [secretAnswers, setSecretAnswers] = useState<Record<number, string>>({})
+  const [secretAnswers, setSecretAnswers] = useState<Record<string, string>>({})
+  const [secretQuizScore, setSecretQuizScore] = useState<number | null>(null)
   const [badgeQueue, setBadgeQueue] = useState<string[]>([])
   const newBadge = badgeQueue[0] || null
   const announceBadges = (codes: (string | null | undefined)[]) => {
@@ -83,6 +84,11 @@ export function App() {
   }, [initData])
 
   useEffect(() => { void load() }, [load])
+
+  useEffect(() => {
+    setSecretAnswers({})
+    setSecretQuizScore(null)
+  }, [bootstrap?.event?.id])
 
   useEffect(() => {
     if (!bootstrap?.event) return
@@ -268,12 +274,15 @@ export function App() {
     })
   }
 
-  const unlockSecret = (offer: SecretOffer) => {
+  const solveSecretQuiz = () => {
     void run(async () => {
-      const updated = await api<SecretOffer>(`/secret-menu/${offer.id}/unlock`, initData, 'POST', { answer: secretAnswers[offer.id] || '' })
-      setSecretMenu(current => current ? { offers: current.offers.map(row => row.id === offer.id ? updated : row) } : current)
-      setSecretAnswers(current => ({ ...current, [offer.id]: '' }))
-      announceBadges([updated.new_achievement])
+      const result = await api<SecretQuizResult>('/secret-menu/quiz', initData, 'POST', { answers: secretAnswers })
+      setSecretQuizScore(result.score)
+      if (result.correct && result.menu) {
+        setSecretMenu(result.menu)
+        setSecretAnswers({})
+        announceBadges([result.new_achievement])
+      }
     })
   }
 
@@ -425,11 +434,22 @@ export function App() {
       {screen === 'secret' && <>
         <h2 className="screen-title">{t.secretMenu}</h2>
         <p className="section-intro">{t.secretIntro}</p>
-        {!secretMenu ? <div className="skeleton skeleton-item" /> : secretMenu.offers.length === 0 ? <Empty title={t.secretEmpty} /> : <div className="secret-list">{secretMenu.offers.map(offer => <section className="secret-card" key={offer.id}>
-          <div className="secret-card-head"><span aria-hidden="true">✦</span><small>{offer.remaining} {t.portionsLeft}</small></div>
-          <p className="secret-riddle">{offer.riddle}</p>
-          {!offer.available ? <p className="helper-text">{offer.unavailable_reason === 'sold_out' ? t.soldOut : offer.unavailable_reason === 'upcoming' ? `${t.availableFrom} ${new Date(offer.available_from).toLocaleString(language, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}` : t.secretUnavailable}</p> : offer.item ? <div className="secret-reveal"><strong>{offer.item.name}</strong><p>{offer.item.description || offer.item.ingredients}</p><button className="button button--primary" onClick={() => openItem(offer.item!, 'secret')}>{t.add}</button></div> : <div className="secret-answer"><label className="field-label">{t.riddleAnswer}<input maxLength={120} value={secretAnswers[offer.id] || ''} onChange={event => setSecretAnswers(current => ({ ...current, [offer.id]: event.target.value }))} /></label><button className="button button--primary" disabled={busy || !secretAnswers[offer.id]?.trim()} onClick={() => unlockSecret(offer)}>{t.unlock}</button></div>}
-        </section>)}</div>}
+        {!secretMenu ? <div className="skeleton skeleton-item" /> : secretMenu.offers.length === 0 ? <Empty title={t.secretEmpty} /> : <>
+          {secretQuizScore === secretMenu.quiz.length && secretMenu.offers.every(offer => offer.unlocked || offer.remaining === 0) && <div className="inline-info" role="status">{t.secretQuizSuccess}</div>}
+          {secretMenu.offers.some(offer => !offer.unlocked && offer.remaining > 0 && offer.unavailable_reason !== 'unavailable') && <section className="secret-quiz-card">
+            <h3>{t.secretQuizTitle}</h3><p>{t.secretQuizIntro}</p>
+            <div className="secret-quiz-questions">{secretMenu.quiz.map((question, index) => <fieldset key={question.id}>
+              <legend><span>{index + 1}.</span> {question.question}</legend>
+              {question.options.map(option => <label key={option.id} className="secret-quiz-option"><input type="radio" name={`secret-${question.id}`} checked={secretAnswers[question.id] === option.id} onChange={() => { setSecretAnswers(current => ({ ...current, [question.id]: option.id })); setSecretQuizScore(null) }} /><span>{option.label}</span></label>)}
+            </fieldset>)}</div>
+            {secretQuizScore !== null && <p className="secret-quiz-feedback" role="status">{secretQuizScore === secretMenu.quiz.length ? t.secretQuizSuccess : `${t.secretQuizScore} ${secretQuizScore}/${secretMenu.quiz.length}. ${t.secretQuizRetry}`}</p>}
+            <button className="button button--primary" disabled={busy || !event.orders_enabled || secretMenu.quiz.some(question => !secretAnswers[question.id])} onClick={solveSecretQuiz}>{t.secretQuizSubmit}</button>
+          </section>}
+          <div className="secret-list">{secretMenu.offers.map(offer => <section className="secret-card" key={offer.id}>
+            <div className="secret-card-head"><span aria-hidden="true">✦</span><small>{offer.remaining} {t.portionsLeft}</small></div>
+            {!offer.available ? <p className="helper-text">{offer.unavailable_reason === 'sold_out' ? t.soldOut : offer.unavailable_reason === 'upcoming' ? `${t.availableFrom} ${new Date(offer.available_from).toLocaleString(language, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}` : t.secretUnavailable}</p> : offer.item ? <div className="secret-reveal"><strong>{offer.item.name}</strong><p>{offer.item.description || offer.item.ingredients}</p><button className="button button--primary" onClick={() => openItem(offer.item!, 'secret')}>{t.add}</button></div> : <p className="helper-text">{t.secretLocked}</p>}
+          </section>)}</div>
+        </>}
       </>}
 
       {screen === 'top' && <>

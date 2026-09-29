@@ -26,11 +26,15 @@ export type Achievements = {
   quiz: { question: string; options: { id: string; label: string }[] }
 }
 export type SecretOffer = {
-  id: number; riddle: string; available_from: string; available_until: string
+  id: number; available_from: string; available_until: string
   remaining: number; available: boolean; unavailable_reason: 'sold_out' | 'upcoming' | 'unavailable' | null
-  unlocked: boolean; item: MenuItem | null; new_achievement?: string | null
+  unlocked: boolean; item: MenuItem | null
 }
-export type SecretMenu = { offers: SecretOffer[] }
+export type SecretQuizQuestion = { id: string; question: string; options: { id: string; label: string }[] }
+export type SecretMenu = { offers: SecretOffer[]; quiz: SecretQuizQuestion[] }
+export type SecretQuizResult = {
+  correct: boolean; score: number; total: number; menu?: SecretMenu; new_achievement?: string | null
+}
 export type Bootstrap = {
   user: { display_name: string; language: Language }
   event: null | { id: number; name: string; orders_enabled: boolean; max_items_per_order: number; max_same_item: number }

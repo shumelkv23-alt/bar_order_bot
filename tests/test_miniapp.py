@@ -525,8 +525,7 @@ async def test_secret_menu_unlock_window_stock_and_cancellation(miniapp_client):
         offer = await create_secret_offer(
             SecretOfferCreate(
                 event_id=event.id, menu_item_id=item_id,
-                riddle_ru="Что растёт в саду?", riddle_en="What grows in a garden?",
-                answer="Мята", available_from=now + timedelta(minutes=10),
+                available_from=now + timedelta(minutes=10),
                 available_until=now + timedelta(hours=1), portions_total=1,
             ), session, "admin",
         )
@@ -541,33 +540,67 @@ async def test_secret_menu_unlock_window_stock_and_cancellation(miniapp_client):
         "/api/v1/miniapp/cart/items", headers=first_headers,
         json={"menu_item_id": item_id, "quantity": 1},
     )).status_code == 409
-    upcoming = (await client.get(secret_url, headers=first_headers)).json()["offers"][0]
+    secret_page = (await client.get(secret_url, headers=first_headers)).json()
+    upcoming = secret_page["offers"][0]
     assert upcoming["item"] is None and upcoming["available"] is False
     assert upcoming["available_from"].endswith("+00:00")
+    assert len(secret_page["quiz"]) == 6
+    assert not any("answer" in question for question in secret_page["quiz"])
+    oversized = await client.post(
+        f"{secret_url}/quiz",
+        headers={**first_headers, "Content-Type": "application/json"},
+        content=json.dumps({"answers": {"junk": "x" * 5000}}),
+    )
+    assert oversized.status_code == 413
+
+    async def oversized_stream():
+        yield b'{"answers":{"junk":"'
+        yield b"x" * 5000
+
+    streamed = await client.post(
+        f"{secret_url}/quiz",
+        headers={**first_headers, "Content-Type": "application/json"},
+        content=oversized_stream(),
+    )
+    assert streamed.status_code == 413
     assert (await client.post(
         f"{secret_url}/{offer_id}/unlock", headers=first_headers, json={"answer": "Мята"}
-    )).status_code == 409
+    )).status_code == 404
+
+    answers = {
+        "halloween_date": "oct31", "lantern": "pumpkin", "trick_or_treat": "trick",
+        "html": "structure", "python_comment": "hash", "git": "changes",
+    }
+    wrong = await client.post(
+        f"{secret_url}/quiz", headers=first_headers,
+        json={"answers": {**answers, "halloween_date": "nov1"}},
+    )
+    assert wrong.json() == {"correct": False, "score": 5, "total": 6}
+    assert (await client.get(secret_url, headers=first_headers)).json()["offers"][0][
+        "unlocked"
+    ] is False
+    solved = await client.post(
+        f"{secret_url}/quiz", headers=first_headers, json={"answers": answers},
+    )
+    assert solved.status_code == 200
+    assert solved.json()["new_achievement"] == "inner_circle"
+    assert solved.json()["menu"]["offers"][0]["unlocked"] is True
+    assert solved.json()["menu"]["offers"][0]["item"] is None
 
     async with factory() as session:
         await update_secret_offer(
             offer_id, SecretOfferUpdate(available_from=now - timedelta(minutes=1)),
             session, "admin",
         )
-    assert (await client.post(
-        f"{secret_url}/{offer_id}/unlock", headers=first_headers, json={"answer": "укроп"}
-    )).status_code == 422
-    revealed = (await client.post(
-        f"{secret_url}/{offer_id}/unlock", headers=first_headers,
-        json={"answer": "  МЯТА  "},
-    )).json()
+    revealed = (await client.get(secret_url, headers=first_headers)).json()["offers"][0]
     assert revealed["item"]["id"] == item_id
-    assert revealed["new_achievement"] == "inner_circle"
     second_offer = (await client.get(secret_url, headers=second_headers)).json()["offers"][0]
     assert second_offer["item"] is None
     second_unlock = await client.post(
-        f"{secret_url}/{offer_id}/unlock", headers=second_headers, json={"answer": "мята"}
+        f"{secret_url}/quiz", headers=second_headers, json={"answers": answers},
     )
     assert second_unlock.status_code == 200
+    assert second_unlock.json()["menu"]["offers"][0]["item"]["id"] == item_id
     second_added = await client.post(
         "/api/v1/miniapp/cart/items", headers=second_headers,
         json={"menu_item_id": item_id, "quantity": 1},
@@ -617,6 +650,47 @@ async def test_secret_menu_unlock_window_stock_and_cancellation(miniapp_client):
     paused = (await client.get(secret_url, headers=first_headers)).json()["offers"][0]
     assert paused["available"] is False
     assert paused["unavailable_reason"] == "unavailable"
+    assert (await client.post(
+        f"{secret_url}/quiz", headers=first_headers, json={"answers": answers},
+    )).status_code == 409
+
+
+async def test_secret_quiz_unlocks_all_current_offers_for_one_guest(miniapp_client):
+    client, factory = miniapp_client
+    headers = {"X-Telegram-Init-Data": signed_data(503)}
+    other_headers = {"X-Telegram-Init-Data": signed_data(504)}
+    catalog = (await client.get("/api/v1/miniapp/menu", headers=headers)).json()
+    item_ids = [item["id"] for category in catalog["categories"]
+                for item in category["items"]][:2]
+    now = datetime.now(UTC)
+    async with factory() as session:
+        event = await get_active_event(session)
+        for item_id in item_ids:
+            await create_secret_offer(
+                SecretOfferCreate(
+                    event_id=event.id, menu_item_id=item_id,
+                    available_from=now - timedelta(minutes=1),
+                    available_until=now + timedelta(hours=1), portions_total=2,
+                ), session, "admin",
+            )
+    secret_url = "/api/v1/miniapp/secret-menu"
+    assert all(offer["item"] is None for offer in (
+        await client.get(secret_url, headers=other_headers)
+    ).json()["offers"])
+    answers = {
+        "halloween_date": "oct31", "lantern": "pumpkin", "trick_or_treat": "trick",
+        "html": "structure", "python_comment": "hash", "git": "changes",
+    }
+    solved = await client.post(
+        f"{secret_url}/quiz", headers=headers, json={"answers": answers},
+    )
+    assert solved.status_code == 200
+    assert {offer["item"]["id"] for offer in solved.json()["menu"]["offers"]} == set(
+        item_ids
+    )
+    assert all(offer["item"] is None for offer in (
+        await client.get(secret_url, headers=other_headers)
+    ).json()["offers"])
 
 
 async def test_secret_offer_rejects_inactive_category(miniapp_client):
