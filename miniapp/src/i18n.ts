@@ -23,6 +23,10 @@ const strings = {
     noEvent: 'Нет активного мероприятия', noEventHint: 'Меню появится здесь, когда мероприятие начнётся.',
     loadError: 'Не удалось загрузить данные', orderError: 'Не удалось подтвердить заказ. Можно безопасно повторить.',
     checkOrder: 'Проверьте состав заказа перед отправкой.',
+    profile: 'Профиль', achievements: 'Ачивки вечера', earned: 'Получено',
+    achievementUnlocked: 'Новая ачивка', firstContact: 'Первый контакт',
+    pathfinder: 'Следопыт', connoisseur: 'Знаток',
+    quiz: 'Викторина', quizCorrect: 'Верно! Значок ваш.', quizWrong: 'Пока неверно. Попробуйте ещё раз.',
   },
   en: {
     menu: 'Menu', mystery: 'Mystery', top: 'Tonight’s top', cart: 'Order',
@@ -46,6 +50,10 @@ const strings = {
     noEvent: 'No active event', noEventHint: 'The menu will appear when the event starts.',
     loadError: 'Could not load data', orderError: 'Could not confirm the order. You can safely retry.',
     checkOrder: 'Review your order before sending it.',
+    profile: 'Profile', achievements: 'Tonight’s badges', earned: 'Earned',
+    achievementUnlocked: 'New badge', firstContact: 'First contact',
+    pathfinder: 'Pathfinder', connoisseur: 'Connoisseur',
+    quiz: 'Quiz', quizCorrect: 'Correct! The badge is yours.', quizWrong: 'Not quite. Try again.',
   },
 } as const
 

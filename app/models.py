@@ -218,6 +218,17 @@ class EventLeaderboardPreference(TimestampMixin, Base):
     show_telegram_name: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class EventAchievement(Base):
+    __tablename__ = "event_achievements"
+    __table_args__ = (UniqueConstraint("event_id", "user_id", "code"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    code: Mapped[str] = mapped_column(String(40))
+    awarded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class OrderItem(Base):
     __tablename__ = "order_items"
 

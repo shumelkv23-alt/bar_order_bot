@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, ApiError, type Bootstrap, type Cart, type CartItem, type Language, type Leaderboard, type Menu, type MenuItem, type Order } from './api'
+import { api, ApiError, type Achievements, type Bootstrap, type Cart, type CartItem, type Language, type Leaderboard, type Menu, type MenuItem, type Order } from './api'
 import { copy } from './i18n'
 import { initTelegram, telegram } from './telegram'
 
-type Screen = 'menu' | 'mystery' | 'top' | 'cart' | 'item' | 'order'
+type Screen = 'menu' | 'mystery' | 'top' | 'profile' | 'cart' | 'item' | 'order'
 type Draft = { item: MenuItem; origin: 'menu' | 'mystery' | 'cart'; cartItemId?: number; quantity: number; modifierIds: number[]; comment: string; expectedQuantity?: number }
-type MysteryResult = { item: MenuItem; can_reroll: boolean }
+type MysteryResult = { item: MenuItem; can_reroll: boolean; discovery_token: string }
 
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
   return <svg width={size} height={size} aria-hidden="true" className="icon"><use href={`/static/panel-icons.svg#${name}`} /></svg>
@@ -33,6 +33,9 @@ export function App() {
   const [menu, setMenu] = useState<Menu | null>(null)
   const [cart, setCart] = useState<Cart | null>(null)
   const [board, setBoard] = useState<Leaderboard | null>(null)
+  const [achievements, setAchievements] = useState<Achievements | null>(null)
+  const [newBadge, setNewBadge] = useState<string | null>(null)
+  const [quizFeedback, setQuizFeedback] = useState<boolean | null>(null)
   const [screen, setScreen] = useState<Screen>('menu')
   const [draft, setDraft] = useState<Draft | null>(null)
   const [mystery, setMystery] = useState<MysteryResult | null>(null)
@@ -111,6 +114,21 @@ export function App() {
     }, 15000)
     return () => window.clearInterval(timer)
   }, [screen, bootstrap?.event, refreshBoard])
+
+  const refreshAchievements = useCallback(async () => {
+    if (!bootstrap?.event) return
+    setAchievements(await api<Achievements>('/achievements', initData))
+  }, [bootstrap?.event, initData])
+
+  useEffect(() => {
+    if (screen === 'profile') void refreshAchievements().catch((cause: Error) => setError(cause.message))
+  }, [screen, refreshAchievements])
+
+  useEffect(() => {
+    if (!newBadge) return
+    const timer = window.setTimeout(() => setNewBadge(null), 4000)
+    return () => window.clearTimeout(timer)
+  }, [newBadge])
 
   const goBack = useCallback(() => {
     setError('')
@@ -195,6 +213,7 @@ export function App() {
         comment: orderComment, idempotency_key: requestKey.current,
       })
       setOrder(created)
+      if (created.new_achievements?.length) setNewBadge(created.new_achievements[0])
       setScreen('order')
       setCart({ id: cart?.id || 0, event_id: cart?.event_id || 0, items: [], total_quantity: 0 })
       requestKey.current = null
@@ -211,15 +230,34 @@ export function App() {
     })
   }
 
+  const discoverMark = () => {
+    if (!mystery) return
+    void run(async () => {
+      const result = await api<{ new_achievement: string | null }>('/achievements/discover', initData, 'POST', { token: mystery.discovery_token })
+      if (result.new_achievement) setNewBadge(result.new_achievement)
+      if (achievements) await refreshAchievements()
+    })
+  }
+
+  const answerQuiz = (answer: string) => {
+    void run(async () => {
+      const result = await api<{ correct: boolean; new_achievement: string | null }>('/achievements/quiz', initData, 'POST', { answer })
+      setQuizFeedback(result.correct)
+      if (result.new_achievement) setNewBadge(result.new_achievement)
+      if (result.correct) await refreshAchievements()
+    })
+  }
+
   const switchLanguage = () => {
     void run(async () => {
       const next: Language = language === 'ru' ? 'en' : 'ru'
       await api('/me/language', initData, 'PUT', { language: next })
-      const [catalog, basket, latest] = await Promise.all([
+      const [catalog, basket, latest, badges] = await Promise.all([
         api<Menu>('/menu', initData), api<Cart>('/cart', initData),
         api<{ order: Order | null }>('/orders/latest', initData),
+        api<Achievements>('/achievements', initData),
       ])
-      setLanguage(next); setMenu(catalog); setCart(basket); setOrder(latest.order); setBoard(null); setMystery(null)
+      setLanguage(next); setMenu(catalog); setCart(basket); setOrder(latest.order); setBoard(null); setAchievements(badges); setMystery(null); setQuizFeedback(null)
     })
   }
 
@@ -232,6 +270,7 @@ export function App() {
   const activeOrder = bootstrap.active_order
   const canOrder = event.orders_enabled && !activeOrder
   const cartCount = cart?.total_quantity || 0
+  const badgeNames: Record<string, string> = { first_contact: t.firstContact, pathfinder: t.pathfinder, connoisseur: t.connoisseur }
 
   return <div className="app-shell">
     <header className="app-header">
@@ -245,6 +284,7 @@ export function App() {
     </header>
 
     {error && <div className="notice" role="alert"><span>{error}</span><button aria-label="Close" onClick={() => setError('')}><Icon name="close" size={17} /></button></div>}
+    {newBadge && <div className="achievement-toast" role="status"><span className="achievement-toast-symbol" aria-hidden="true">✦</span><span>{t.achievementUnlocked}<strong>{badgeNames[newBadge] || newBadge}</strong></span></div>}
 
     <main className="app-content">
       {screen === 'menu' && <>
@@ -313,7 +353,7 @@ export function App() {
       {screen === 'mystery' && <>
         <h2 className="screen-title">{t.mystery}</h2>
         <p className="section-intro">{t.mysteryIntro}</p>
-        <div className="mystery-stage"><div className="mystery-glyph" aria-hidden="true">?</div><p>{mystery ? mystery.item.name : t.surprise}</p></div>
+        <div className="mystery-stage">{mystery && <button className="easter-mark" type="button" aria-label={language === 'ru' ? 'Загадочный знак' : 'Mysterious mark'} disabled={busy} onClick={discoverMark}>✧</button>}<div className="mystery-glyph" aria-hidden="true">?</div><p>{mystery ? mystery.item.name : t.surprise}</p></div>
         <label className="field-label">{t.menu}<select value={mysteryCategoryId || ''} onChange={event => { setMysteryCategoryId(event.target.value ? Number(event.target.value) : null); setMystery(null) }}><option value="">{t.all}</option>{categories.map(category => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
         {mystery && <div className="mystery-result"><h3>{mystery.item.name}</h3><p>{mystery.item.description || mystery.item.ingredients}</p>{mystery.item.is_alcoholic && <small>{t.alcoholic}</small>}<button className="button button--primary" disabled={!event.orders_enabled} onClick={() => openItem(mystery.item, 'mystery')}>{t.add}</button></div>}
         <button className={`button ${mystery ? 'button--secondary' : 'button--primary'}`} disabled={busy || !event.orders_enabled || (mystery !== null && !mystery.can_reroll)} onClick={drawMystery}>{mystery ? t.again : t.surprise}</button>
@@ -326,6 +366,16 @@ export function App() {
         <label className="consent-row"><input type="checkbox" checked={board?.show_telegram_name || false} disabled={!board || busy} onChange={event => void run(async () => { await api('/leaderboard/privacy', initData, 'PUT', { show_telegram_name: event.target.checked }); await refreshBoard() })} /><span><strong>{t.nameConsent}</strong><small>{t.nameConsentHint}</small></span></label>
       </>}
 
+      {screen === 'profile' && <>
+        <h2 className="screen-title">{t.profile}</h2>
+        <p className="section-intro">{bootstrap.user.display_name} · {event.name}</p>
+        <div className="section-heading"><h2>{t.achievements}</h2><span>{achievements?.achievements.filter(badge => badge.awarded_at).length || 0} / {achievements?.achievements.length || 3}</span></div>
+        {!achievements ? <div className="skeleton skeleton-item" /> : <div className="achievement-grid">{achievements.achievements.map(badge => <div className={`achievement-card ${badge.awarded_at ? 'achievement-card--earned' : ''}`} key={badge.code}>
+          <span className="achievement-symbol" aria-hidden="true">{badge.symbol}</span><div><strong>{badge.name}</strong><p>{badge.description}</p>{badge.awarded_at && <small>{t.earned}</small>}</div>
+        </div>)}</div>}
+        {achievements && !achievements.achievements.some(badge => badge.code === 'connoisseur' && badge.awarded_at) && <section className="quiz-card"><h3>{t.quiz}</h3><p>{achievements.quiz.question}</p><div className="quiz-options">{achievements.quiz.options.map(option => <button key={option.id} className="button button--secondary" disabled={busy} onClick={() => answerQuiz(option.id)}>{option.label}</button>)}</div>{quizFeedback !== null && <p className="quiz-feedback" role="status">{quizFeedback ? t.quizCorrect : t.quizWrong}</p>}</section>}
+      </>}
+
       {screen === 'order' && order && <>
         <div className="order-confirmation"><div className="confirmation-mark"><Icon name="check" size={30} /></div><p>{t.status}: {t[order.status as keyof typeof t] || order.status}</p><h2>{order.public_number}</h2></div>
         <div className="order-lines">{order.items.map((item, index) => <div key={`${item.name}-${index}`}><span>{item.name}{item.modifiers.length ? ` · ${item.modifiers.join(', ')}` : ''}</span><strong>×{item.quantity}</strong></div>)}</div>
@@ -334,7 +384,7 @@ export function App() {
     </main>
 
     {screen !== 'cart' && screen !== 'item' && screen !== 'order' && cartCount > 0 && <button className="cart-floating" onClick={() => { void refreshCart().catch(() => {}); setScreen('cart') }}><span>{t.cart}</span><strong>{cartCount}</strong></button>}
-    {screen !== 'item' && screen !== 'cart' && screen !== 'order' && <nav className="bottom-nav" aria-label="Main navigation"><button className={screen === 'menu' ? 'active' : ''} onClick={() => setScreen('menu')}>{t.menu}</button><button className={screen === 'mystery' ? 'active' : ''} onClick={() => setScreen('mystery')}>{t.mystery}</button><button className={screen === 'top' ? 'active' : ''} onClick={() => setScreen('top')}>{t.top}</button></nav>}
+    {screen !== 'item' && screen !== 'cart' && screen !== 'order' && <nav className="bottom-nav" aria-label="Main navigation"><button className={screen === 'menu' ? 'active' : ''} onClick={() => setScreen('menu')}>{t.menu}</button><button className={screen === 'mystery' ? 'active' : ''} onClick={() => setScreen('mystery')}>{t.mystery}</button><button className={screen === 'top' ? 'active' : ''} onClick={() => setScreen('top')}>{t.top}</button><button className={screen === 'profile' ? 'active' : ''} onClick={() => setScreen('profile')}>{t.profile}</button></nav>}
   </div>
 }
 

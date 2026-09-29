@@ -14,6 +14,14 @@ export type Cart = { id: number; event_id: number; items: CartItem[]; total_quan
 export type Order = {
   id: number; public_number: string; status: string; version: number; created_at: string
   comment: string; items: { name: string; quantity: number; modifiers: string[]; comment: string }[]
+  new_achievements?: string[]
+}
+export type Achievement = {
+  code: string; name: string; description: string; symbol: string; awarded_at: string | null
+}
+export type Achievements = {
+  achievements: Achievement[]
+  quiz: { question: string; options: { id: string; label: string }[] }
 }
 export type Bootstrap = {
   user: { display_name: string; language: Language }

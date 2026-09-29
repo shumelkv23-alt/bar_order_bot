@@ -31,6 +31,7 @@ from app.models import (
     SpecialRequest,
     User,
 )
+from app.services.achievements import award_achievement
 
 
 class DomainError(RuntimeError):
@@ -497,7 +498,7 @@ async def submit_cart(
     *,
     idempotency_key: str | None = None,
     return_creation: bool = False,
-) -> Order | tuple[Order, bool]:
+) -> Order | tuple[Order, bool, list[str]]:
     if idempotency_key:
         previous = await session.scalar(
             select(Order).where(
@@ -508,7 +509,7 @@ async def submit_cart(
         )
         if previous:
             order = await get_order(session, previous.id)
-            return (order, False) if return_creation else order
+            return (order, False, []) if return_creation else order
     event = await session.scalar(
         select(Event)
         .where(Event.id == event_id)
@@ -528,7 +529,7 @@ async def submit_cart(
         )
         if previous:
             order = await get_order(session, previous.id)
-            return (order, False) if return_creation else order
+            return (order, False, []) if return_creation else order
 
     existing = await session.scalar(
         select(Order).where(
@@ -539,6 +540,10 @@ async def submit_cart(
     )
     if existing:
         raise ConflictError(f"У вас уже есть активный заказ {existing.public_number}")
+
+    has_prior_order = await session.scalar(
+        select(Order.id).where(Order.user_id == user_id, Order.event_id == event_id).limit(1)
+    )
 
     cart = await get_or_create_cart(session, user_id, event_id)
     if not cart.items:
@@ -606,9 +611,13 @@ async def submit_cart(
     )
     session.add(order)
     cart.items.clear()
+    new_achievements = []
+    if has_prior_order is None:
+        if await award_achievement(session, event_id, user_id, "first_contact"):
+            new_achievements.append("first_contact")
     await session.commit()
     created = await get_order(session, order.id)
-    return (created, True) if return_creation else created
+    return (created, True, new_achievements) if return_creation else created
 
 
 async def get_order(

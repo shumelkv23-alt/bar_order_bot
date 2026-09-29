@@ -16,12 +16,19 @@ from app.config import get_settings
 from app.db import get_session
 from app.domain import Language
 from app.models import Order, User
+from app.services.achievements import (
+    achievement_collection,
+    award_achievement,
+    discovery_token,
+    valid_discovery_token,
+)
 from app.services.miniapp_auth import InvalidInitData, verify_init_data
 from app.services.miniapp_leaderboard import leaderboard, set_name_consent
 from app.services.orders import (
     ConflictError,
     DomainError,
     NotFoundError,
+    ValidationError,
     add_to_cart,
     cart_to_dict,
     get_active_event,
@@ -90,6 +97,14 @@ class PrivacyRequest(BaseModel):
     show_telegram_name: bool
 
 
+class QuizAnswer(BaseModel):
+    answer: str = Field(min_length=1, max_length=20)
+
+
+class DiscoveryProof(BaseModel):
+    token: str = Field(min_length=1, max_length=200)
+
+
 def _english_error(exc: DomainError) -> str:
     message = str(exc)
     if message.startswith("У вас уже есть активный заказ "):
@@ -118,6 +133,7 @@ def _english_error(exc: DomainError) -> str:
         "Позиция корзины не найдена": "Cart item not found",
         "Активное мероприятие не найдено": "No active event",
         "В этой категории пока нет доступных позиций": "No available items in this category",
+        "Сначала найдите знак на экране Мистери": "Find the mark on the Mystery screen first",
     }
     return translations.get(message, "Please refresh and try again")
 
@@ -382,7 +398,7 @@ async def create_order(
         )
     )
     if previous:
-        return _order_view(previous, user.language)
+        return {**_order_view(previous, user.language), "new_achievements": []}
     _rate_limit(user.id, "order", 10)
     try:
         event = await get_active_event(session)
@@ -394,7 +410,7 @@ async def create_order(
             idempotency_key=str(payload.idempotency_key),
             return_creation=True,
         )
-        order, created = result
+        order, created, new_achievements = result
     except DomainError as exc:
         raise _error(exc, user.language) from exc
     bot = getattr(request.app.state, "bot", None)
@@ -409,7 +425,58 @@ async def create_order(
             await bot.send_message(user.telegram_id, message)
         except Exception:
             logger.exception("miniapp_order_confirmation_failed", extra={"order_id": order.id})
-    return _order_view(order, user.language)
+    return {
+        **_order_view(order, user.language),
+        "new_achievements": new_achievements,
+    }
+
+
+@router.get("/achievements")
+async def achievements(session: Session, user: Guest) -> dict:
+    try:
+        event = await get_active_event(session)
+    except DomainError as exc:
+        raise _error(exc, user.language) from exc
+    # Give existing guests their first-order badge after this feature is deployed.
+    prior_order = await session.scalar(
+        select(Order.id).where(Order.event_id == event.id, Order.user_id == user.id).limit(1)
+    )
+    if prior_order is not None and await award_achievement(
+        session, event.id, user.id, "first_contact"
+    ):
+        await session.commit()
+    return await achievement_collection(session, event.id, user.id, user.language)
+
+
+@router.post("/achievements/discover")
+async def discover_achievement(payload: DiscoveryProof, session: Session, user: Guest) -> dict:
+    _rate_limit(user.id, "discover", 5)
+    try:
+        event = await get_active_event(session)
+    except DomainError as exc:
+        raise _error(exc, user.language) from exc
+    if not valid_discovery_token(
+        payload.token, event.id, user.id, get_settings().bot_token or ""
+    ):
+        raise _error(ValidationError("Сначала найдите знак на экране Мистери"), user.language)
+    awarded = await award_achievement(session, event.id, user.id, "pathfinder")
+    await session.commit()
+    return {"new_achievement": "pathfinder" if awarded else None}
+
+
+@router.post("/achievements/quiz")
+async def answer_quiz(payload: QuizAnswer, session: Session, user: Guest) -> dict:
+    _rate_limit(user.id, "quiz", 10)
+    try:
+        event = await get_active_event(session)
+    except DomainError as exc:
+        raise _error(exc, user.language) from exc
+    correct = payload.answer == "mint"
+    awarded = False
+    if correct:
+        awarded = await award_achievement(session, event.id, user.id, "connoisseur")
+        await session.commit()
+    return {"correct": correct, "new_achievement": "connoisseur" if awarded else None}
 
 
 @router.post("/mystery/generate")
@@ -428,7 +495,13 @@ async def mystery(payload: MysteryRequest, session: Session, user: Guest) -> dic
                 entry for entry in entries if entry.menu_item_id != payload.exclude_menu_item_id
             ]
         chosen = secrets.choice(entries)
-        return {"item": _item_view(chosen, user.language), "can_reroll": can_reroll}
+        return {
+            "item": _item_view(chosen, user.language),
+            "can_reroll": can_reroll,
+            "discovery_token": discovery_token(
+                event.id, user.id, chosen.menu_item_id, get_settings().bot_token or ""
+            ),
+        }
     except DomainError as exc:
         raise _error(exc, user.language) from exc
 

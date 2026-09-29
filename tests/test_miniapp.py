@@ -78,6 +78,28 @@ def test_miniapp_migration_upgrades_existing_schema(monkeypatch):
     engine.dispose()
 
 
+def test_achievements_migration_upgrades_existing_schema(monkeypatch):
+    path = Path(__file__).resolve().parents[1] / "alembic/versions/20260929_0003_achievements.py"
+    spec = importlib.util.spec_from_file_location("achievements_migration", path)
+    assert spec and spec.loader
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("CREATE TABLE users (id INTEGER PRIMARY KEY)")
+        connection.exec_driver_sql("CREATE TABLE events (id INTEGER PRIMARY KEY)")
+        operations = Operations(MigrationContext.configure(connection))
+        monkeypatch.setattr(migration, "op", operations)
+        migration.upgrade()
+        migration.upgrade()
+        schema = inspect(connection)
+        assert "event_achievements" in schema.get_table_names()
+        assert {"event_id", "user_id", "code", "awarded_at"}.issubset(
+            {column["name"] for column in schema.get_columns("event_achievements")}
+        )
+    engine.dispose()
+
+
 @pytest.fixture
 async def miniapp_client(monkeypatch):
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -173,6 +195,63 @@ async def test_miniapp_order_mystery_and_consent(miniapp_client):
     late_retry = await client.post("/api/v1/miniapp/orders", headers=headers, json=payload)
     assert late_retry.status_code == 200
     assert late_retry.json()["id"] == first.json()["id"]
+
+
+async def test_achievements_are_awarded_once_and_kept_in_profile(miniapp_client):
+    client, _ = miniapp_client
+    headers = {"X-Telegram-Init-Data": signed_data(303)}
+    profile_url = "/api/v1/miniapp/achievements"
+    first_profile = (await client.get(profile_url, headers=headers)).json()
+    assert {badge["code"] for badge in first_profile["achievements"]} == {
+        "first_contact", "pathfinder", "connoisseur"
+    }
+    assert all(badge["awarded_at"] is None for badge in first_profile["achievements"])
+
+    wrong = await client.post(f"{profile_url}/quiz", headers=headers, json={"answer": "lime"})
+    assert wrong.json() == {"correct": False, "new_achievement": None}
+    correct = await client.post(f"{profile_url}/quiz", headers=headers, json={"answer": "mint"})
+    assert correct.json() == {"correct": True, "new_achievement": "connoisseur"}
+    repeated = await client.post(f"{profile_url}/quiz", headers=headers, json={"answer": "mint"})
+    assert repeated.json()["new_achievement"] is None
+
+    mystery = await client.post("/api/v1/miniapp/mystery/generate", headers=headers, json={})
+    token = mystery.json()["discovery_token"]
+    assert (await client.post(
+        f"{profile_url}/discover", headers=headers, json={"token": "forged"}
+    )).status_code == 422
+    assert (await client.post(
+        f"{profile_url}/discover",
+        headers={"X-Telegram-Init-Data": signed_data(404)}, json={"token": token}
+    )).status_code == 422
+    discovered = await client.post(
+        f"{profile_url}/discover", headers=headers, json={"token": token}
+    )
+    assert discovered.json()["new_achievement"] == "pathfinder"
+    assert (await client.post(
+        f"{profile_url}/discover", headers=headers, json={"token": token}
+    )).json() == {
+        "new_achievement": None
+    }
+
+    menu = (await client.get("/api/v1/miniapp/menu", headers=headers)).json()
+    item_id = menu["categories"][0]["items"][0]["id"]
+    await client.post(
+        "/api/v1/miniapp/cart/items", headers=headers,
+        json={"menu_item_id": item_id, "quantity": 1},
+    )
+    payload = {"comment": "", "idempotency_key": str(uuid4())}
+    order = await client.post("/api/v1/miniapp/orders", headers=headers, json=payload)
+    assert order.status_code == 200
+    assert order.json()["new_achievements"] == ["first_contact"]
+    retry = await client.post("/api/v1/miniapp/orders", headers=headers, json=payload)
+    assert retry.json()["new_achievements"] == []
+
+    final_profile = (await client.get(profile_url, headers=headers)).json()
+    assert all(badge["awarded_at"] for badge in final_profile["achievements"])
+    other_profile = (await client.get(
+        profile_url, headers={"X-Telegram-Init-Data": signed_data(404)}
+    )).json()
+    assert all(badge["awarded_at"] is None for badge in other_profile["achievements"])
 
 
 async def test_miniapp_requires_auth_and_isolates_carts(miniapp_client):
