@@ -302,6 +302,16 @@ class AuditLog(Base):
 
 class SpecialRequest(TimestampMixin, Base):
     __tablename__ = "special_requests"
+    __table_args__ = (
+        Index(
+            "uq_special_requests_event_user_request",
+            "event_id",
+            "user_id",
+            "request_key",
+            "request_index",
+            unique=True,
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), index=True)
@@ -311,6 +321,8 @@ class SpecialRequest(TimestampMixin, Base):
     )
     request_text: Mapped[str] = mapped_column(String(300))
     source_transcript: Mapped[str] = mapped_column(Text, default="")
+    request_key: Mapped[str | None] = mapped_column(String(36))
+    request_index: Mapped[int | None] = mapped_column(Integer)
     quantity: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(
         String(20), default=SpecialRequestStatus.SUBMITTED.value, index=True

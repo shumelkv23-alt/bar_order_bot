@@ -106,6 +106,9 @@ async def create_special_request(
     quantity: int = 1,
     *,
     source_transcript: str = "",
+    commit: bool = True,
+    request_key: str | None = None,
+    request_index: int | None = None,
 ) -> SpecialRequest:
     event = await session.scalar(
         select(Event)
@@ -124,6 +127,8 @@ async def create_special_request(
         user_id=user_id,
         request_text=request_text.strip()[:300],
         source_transcript=source_transcript.strip(),
+        request_key=request_key,
+        request_index=request_index,
         quantity=quantity,
     )
     session.add(request)
@@ -137,8 +142,10 @@ async def create_special_request(
             payload={"request_text": request.request_text, "quantity": quantity},
         )
     )
-    await session.commit()
-    return await session.scalar(select(SpecialRequest).where(SpecialRequest.id == request.id))
+    if commit:
+        await session.commit()
+        return await session.scalar(select(SpecialRequest).where(SpecialRequest.id == request.id))
+    return request
 
 
 async def list_special_requests(
@@ -322,13 +329,17 @@ def _selected_modifiers(entry: EventMenuItem, modifier_ids: list[int]) -> list[d
     ]
 
 
-async def get_or_create_cart(session: AsyncSession, user_id: int, event_id: int) -> Cart:
+async def get_or_create_cart(
+    session: AsyncSession, user_id: int, event_id: int, *, for_update: bool = False
+) -> Cart:
     statement = (
         select(Cart)
         .where(Cart.user_id == user_id, Cart.event_id == event_id)
         .options(selectinload(Cart.items).selectinload(CartItem.menu_item))
         .execution_options(populate_existing=True)
     )
+    if for_update:
+        statement = statement.with_for_update(of=Cart)
     cart = await session.scalar(statement)
     if cart is None:
         cart = Cart(user_id=user_id, event_id=event_id, items=[])
@@ -351,6 +362,8 @@ async def add_to_cart(
     quantity: int,
     modifier_ids: list[int] | None = None,
     comment: str = "",
+    *,
+    commit: bool = True,
 ) -> Cart:
     modifier_ids = list(dict.fromkeys(modifier_ids or []))
     event = await session.get(Event, event_id)
@@ -365,7 +378,7 @@ async def add_to_cart(
 
     selected_modifiers = _selected_modifiers(entry, modifier_ids)
 
-    cart = await get_or_create_cart(session, user_id, event_id)
+    cart = await get_or_create_cart(session, user_id, event_id, for_update=True)
     current_total = sum(item.quantity for item in cart.items)
     if current_total + quantity > event.max_items_per_order:
         raise ValidationError(f"В одном заказе можно выбрать до {event.max_items_per_order} единиц")
@@ -396,7 +409,10 @@ async def add_to_cart(
                 comment=comment,
             )
         )
-    await session.commit()
+    if commit:
+        await session.commit()
+    else:
+        await session.flush()
     return await get_or_create_cart(session, user_id, event_id)
 
 
@@ -416,6 +432,10 @@ async def update_cart_item_quantity(
     if not row:
         raise NotFoundError("Позиция корзины не найдена")
     cart_item, cart = row
+    cart = await get_or_create_cart(session, user_id, cart.event_id, for_update=True)
+    cart_item = next((item for item in cart.items if item.id == item_id), None)
+    if cart_item is None:
+        raise NotFoundError("Позиция корзины не найдена")
     if expected_quantity is not None and cart_item.quantity != expected_quantity:
         raise ConflictError("Корзина уже изменилась. Откройте её заново")
     if quantity < 1:
@@ -457,6 +477,10 @@ async def remove_cart_item(
     if not row:
         raise NotFoundError("Позиция корзины не найдена")
     cart_item, cart = row
+    cart = await get_or_create_cart(session, user_id, cart.event_id, for_update=True)
+    cart_item = next((item for item in cart.items if item.id == item_id), None)
+    if cart_item is None:
+        raise NotFoundError("Позиция корзины не найдена")
     if expected_quantity is not None and cart_item.quantity != expected_quantity:
         raise ConflictError("Корзина уже изменилась. Откройте её заново")
     await session.delete(cart_item)
@@ -480,12 +504,15 @@ async def update_cart_item_details(
             select(CartItem, Cart)
             .join(Cart)
             .where(CartItem.id == item_id, Cart.user_id == user_id, Cart.event_id == event_id)
-            .with_for_update(of=CartItem)
         )
     ).one_or_none()
     if not row:
         raise NotFoundError("Позиция корзины не найдена")
     cart_item, _ = row
+    cart = await get_or_create_cart(session, user_id, event_id, for_update=True)
+    cart_item = next((item for item in cart.items if item.id == item_id), None)
+    if cart_item is None:
+        raise NotFoundError("Позиция корзины не найдена")
     if expected_quantity is not None and cart_item.quantity != expected_quantity:
         raise ConflictError("Корзина уже изменилась. Откройте её заново")
     event = await session.get(Event, event_id)
@@ -497,7 +524,6 @@ async def update_cart_item_details(
     if not entry.is_available:
         raise ConflictError("Позиция сейчас недоступна")
     selected = _selected_modifiers(entry, list(modifier_ids))
-    cart = await get_or_create_cart(session, user_id, event_id)
     total = sum(item.quantity for item in cart.items) - cart_item.quantity + quantity
     if total > event.max_items_per_order:
         raise ValidationError(f"В одном заказе можно выбрать до {event.max_items_per_order} единиц")
@@ -570,7 +596,7 @@ async def submit_cart(
         select(Order.id).where(Order.user_id == user_id, Order.event_id == event_id).limit(1)
     )
 
-    cart = await get_or_create_cart(session, user_id, event_id)
+    cart = await get_or_create_cart(session, user_id, event_id, for_update=True)
     if not cart.items:
         raise ValidationError("Корзина пуста")
     if sum(item.quantity for item in cart.items) > event.max_items_per_order:
@@ -704,7 +730,7 @@ async def reopen_order_for_edit(
     if any(item.menu_item_id is None for item in order.items):
         raise ConflictError("Одну из позиций больше нельзя вернуть в корзину")
 
-    cart = await get_or_create_cart(session, user_id, order.event_id)
+    cart = await get_or_create_cart(session, user_id, order.event_id, for_update=True)
     combined_total = sum(item.quantity for item in cart.items) + sum(
         item.quantity for item in order.items
     )

@@ -321,6 +321,8 @@ def voice_review_keyboard(
     language: str,
     items: list[dict],
     unmatched: list[dict],
+    has_cart: bool = False,
+    request_key: str = "",
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for clause_index, clause in enumerate(unmatched):
@@ -334,22 +336,20 @@ def voice_review_keyboard(
                             else f"Maybe: {suggestion['name']}"
                         ),
                         callback_data=(
-                            f"voice_suggest:{clause_index}:{suggestion['menu_item_id']}"
+                            f"voice_suggest:{clause_index}:{suggestion['menu_item_id']}:{request_key}"
                         ),
                     )
                 ]
             )
-    if items or unmatched:
+    if items or unmatched or has_cart:
         label = (
-            "Подтвердить и отправить запрос"
-            if unmatched and language == Language.RU.value
-            else "Confirm and send request"
-            if unmatched
-            else "Добавить в корзину"
+            "Подтвердить и отправить заказ"
             if language == Language.RU.value
-            else "Add to cart"
+            else "Confirm and send order"
         )
-        rows.append([InlineKeyboardButton(text=f"✓ {label}", callback_data="voice_confirm")])
+        rows.append(
+            [InlineKeyboardButton(text=f"✓ {label}", callback_data=f"voice_confirm:{request_key}")]
+        )
     rows.append(
         [
             InlineKeyboardButton(

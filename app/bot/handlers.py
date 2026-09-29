@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+import re
 from html import escape
 from io import BytesIO
+from uuid import uuid4
 
 from aiogram import Bot, F, Router
 from aiogram.filters import Command
@@ -26,7 +28,7 @@ from app.bot.keyboards import (
 from app.config import get_settings
 from app.db import async_session_factory
 from app.domain import Language, OrderStatus
-from app.models import User
+from app.models import Event, Order, SpecialRequest, User
 from app.services.assistant import (
     AssistantMenuItem,
     AssistantResponse,
@@ -42,6 +44,7 @@ from app.services.orders import (
     get_active_event,
     get_cart,
     get_menu_entry,
+    get_or_create_cart,
     get_order,
     get_user_active_order,
     list_event_menu,
@@ -119,13 +122,15 @@ async def _resume_waiter(state: FSMContext) -> None:
             "items",
             "unmatched",
             "assistant_reply",
+            "cart_snapshot",
+            "request_key",
         )
         if key in data
     }
     await state.set_data(retained)
     await state.set_state(
         VoiceOrder.reviewing
-        if retained.get("items") or retained.get("unmatched")
+        if retained.get("items") or retained.get("unmatched") or retained.get("cart_snapshot")
         else Waiter.waiting
     )
 
@@ -434,7 +439,7 @@ async def add_draft_to_cart(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "open_order")
 async def open_current_order(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
-    if data.get("items") or data.get("unmatched"):
+    if data.get("items") or data.get("unmatched") or data.get("cart_snapshot"):
         await state.set_state(VoiceOrder.reviewing)
         await callback.answer()
         await _show_voice_review(callback.message, state)
@@ -777,7 +782,7 @@ async def _voice_context(telegram_id: int) -> dict:
         event = await get_active_event(session)
         entries = await list_event_menu(session, event.id)
         cart = await get_cart(session, user.id, event.id)
-        current_cart = cart_to_dict(cart, user.language)["items"]
+        current_cart = _cart_review_items(cart, user.language)
         terms: list[str] = []
         modifier_names: dict[int, dict[int, str]] = {}
         assistant_menu: list[AssistantMenuItem] = []
@@ -831,6 +836,28 @@ async def _voice_context(telegram_id: int) -> dict:
             "current_cart": current_cart,
             "prompt": f"Bar menu vocabulary: {vocabulary}",
         }
+
+
+def _cart_signature(items: list[dict]) -> list[tuple]:
+    return sorted(
+        (
+            item["id"],
+            item["menu_item_id"],
+            item["quantity"],
+            tuple(sorted(item.get("modifier_ids", []))),
+            item.get("comment", ""),
+        )
+        for item in items
+    )
+
+
+def _cart_review_items(cart, language: str) -> list[dict]:
+    items = cart_to_dict(cart, language)["items"]
+    for display_item, cart_item in zip(items, cart.items, strict=True):
+        display_item["modifier_ids"] = sorted(
+            modifier["id"] for modifier in cart_item.selected_modifiers
+        )
+    return items
 
 
 async def _assistant_response(
@@ -995,6 +1022,8 @@ async def _present_assistant_result(
             unmatched=unmatched,
             assistant_reply=reply,
             assistant_history=history,
+            cart_snapshot=context["current_cart"],
+            request_key=str(uuid4()),
         )
         await _show_voice_review(message, state)
         return
@@ -1028,6 +1057,7 @@ def _voice_review_text(
     unmatched: list[dict],
     language: str,
     assistant_reply: str = "",
+    cart_snapshot: list[dict] | None = None,
 ) -> str:
     lines = []
     if assistant_reply:
@@ -1037,9 +1067,20 @@ def _voice_review_text(
         if language == Language.EN.value
         else f"<b>Ваш запрос:</b> <i>{escape(transcript)}</i>"
     )
+    if cart_snapshot:
+        lines.append(
+            "\n<b>Already in your cart:</b>"
+            if language == Language.EN.value
+            else "\n<b>Уже в корзине:</b>"
+        )
+        for item in cart_snapshot:
+            modifiers = ", ".join(escape(name) for name in item["modifiers"])
+            suffix = f" ({modifiers})" if modifiers else ""
+            comment = f" — {escape(item['comment'])}" if item.get("comment") else ""
+            lines.append(f"• {item['quantity']} × {escape(item['name'])}{suffix}{comment}")
     if items:
         lines.append(
-            "\n<b>Matched:</b>" if language == Language.EN.value else "\n<b>Нашёл в меню:</b>"
+            "\n<b>Adding now:</b>" if language == Language.EN.value else "\n<b>Добавлю сейчас:</b>"
         )
         for item in items:
             modifiers = ", ".join(escape(name) for name in item.get("modifier_names", []))
@@ -1072,6 +1113,11 @@ def _voice_review_text(
             else "Неизвестные позиции можно передать бармену как особый запрос."
         )
     lines.append(
+        "\nConfirm to send this order to the bartender."
+        if language == Language.EN.value
+        else "\nПодтвердите, чтобы сразу отправить этот заказ бармену."
+    )
+    lines.append(
         "\nYou can also type a correction, for example: “make the second one without ice”."
         if language == Language.EN.value
         else "\nМожно написать исправление, например: «второй без льда»."
@@ -1089,13 +1135,59 @@ async def _show_voice_review(message: Message, state: FSMContext) -> None:
             data.get("unmatched", []),
             language,
             data.get("assistant_reply", ""),
+            data.get("cart_snapshot", []),
         ),
         reply_markup=voice_review_keyboard(
             language,
             data.get("items", []),
             data.get("unmatched", []),
+            bool(data.get("cart_snapshot")),
+            data.get("request_key", ""),
         ),
     )
+
+
+def _is_send_request(text: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"\s*(?:отправь|отправить|оформи|оформить|подтверди|подтвердить)\s+(?:мой\s+|весь\s+)?заказ[.!?\s]*|\s*(?:send|submit|place)\s+(?:my\s+|the\s+)?order[.!?\s]*",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _is_confirmation(text: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"\s*(?:да|подтверждаю|подтвердить|отправляй|отправить|yes|confirm|send it)[.!?\s]*",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+async def _begin_cart_review(message: Message, state: FSMContext, text: str, context: dict) -> None:
+    if not context["current_cart"]:
+        await message.edit_text(
+            "Корзина пуста. Напишите, что хотите заказать."
+            if context["language"] == Language.RU.value
+            else "Your cart is empty. Tell me what you would like to order.",
+            reply_markup=waiter_keyboard(context["language"]),
+        )
+        return
+    await state.set_state(VoiceOrder.reviewing)
+    await state.update_data(
+        transcript=text,
+        language=context["language"],
+        event_id=context["event_id"],
+        items=[],
+        unmatched=[],
+        assistant_reply="",
+        cart_snapshot=context["current_cart"],
+        request_key=str(uuid4()),
+    )
+    await _show_voice_review(message, state)
 
 
 @router.message(TextOrder.waiting, F.text)
@@ -1108,6 +1200,9 @@ async def waiter_message(message: Message, state: FSMContext) -> None:
     status = await message.answer("Секунду, сверяюсь с меню... / Checking the menu...")
     try:
         context = await _voice_context(message.from_user.id)
+        if _is_send_request(message.text):
+            await _begin_cart_review(status, state, message.text, context)
+            return
         data = await state.get_data()
         result = await _assistant_response(
             message.text,
@@ -1133,7 +1228,13 @@ async def waiter_message(message: Message, state: FSMContext) -> None:
 async def revise_voice_order(message: Message, state: FSMContext) -> None:
     status = await message.answer("Уточняю заказ... / Updating your order...")
     try:
+        if _is_confirmation(message.text):
+            await _confirm_review(message.from_user.id, status, state)
+            return
         context = await _voice_context(message.from_user.id)
+        if _is_send_request(message.text):
+            await _show_voice_review(status, state)
+            return
         data = await state.get_data()
         result = await _assistant_response(
             message.text,
@@ -1178,6 +1279,9 @@ async def receive_voice_order(message: Message, bot: Bot, state: FSMContext) -> 
             language=context["language"],
             prompt=context["prompt"],
         )
+        if _is_send_request(transcription):
+            await _begin_cart_review(status, state, transcription, context)
+            return
         data = await state.get_data()
         result = await _assistant_response(
             transcription,
@@ -1206,10 +1310,13 @@ async def receive_voice_order(message: Message, bot: Bot, state: FSMContext) -> 
 
 @router.callback_query(VoiceOrder.reviewing, F.data.startswith("voice_suggest:"))
 async def choose_voice_suggestion(callback: CallbackQuery, state: FSMContext) -> None:
-    _, clause_index_raw, menu_item_id_raw = callback.data.split(":")
+    _, clause_index_raw, menu_item_id_raw, request_key = callback.data.split(":")
     clause_index = int(clause_index_raw)
     menu_item_id = int(menu_item_id_raw)
     data = await state.get_data()
+    if request_key != data.get("request_key"):
+        await callback.answer("Этот пересказ устарел. Откройте текущий заказ.", show_alert=True)
+        return
     unmatched = list(data.get("unmatched", []))
     if clause_index >= len(unmatched):
         await callback.answer("Open voice order again", show_alert=True)
@@ -1235,85 +1342,174 @@ async def choose_voice_suggestion(callback: CallbackQuery, state: FSMContext) ->
         }
     )
     unmatched.pop(clause_index)
-    await state.update_data(items=items, unmatched=unmatched)
+    await state.update_data(items=items, unmatched=unmatched, request_key=str(uuid4()))
     await callback.answer()
     await _show_voice_review(callback.message, state)
 
 
-@router.callback_query(VoiceOrder.reviewing, F.data == "voice_confirm")
+@router.callback_query(VoiceOrder.reviewing, F.data.startswith("voice_confirm:"))
 async def confirm_voice_order(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    if callback.data != f"voice_confirm:{data.get('request_key', '')}":
+        await callback.answer("Этот пересказ устарел. Откройте текущий заказ.", show_alert=True)
+        return
+    await callback.answer()
+    await _confirm_review(callback.from_user.id, callback.message, state)
+
+
+async def _confirm_review(telegram_id: int, message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     language = data.get("language", Language.RU.value)
     history = list(data.get("assistant_history", []))
-    added: list[str] = []
-    requested: list[str] = []
-    errors: list[str] = []
-    async with async_session_factory() as session:
-        user = await _user(session, callback.from_user.id)
-        if not user:
-            await callback.answer("Use /start first", show_alert=True)
-            return
-        for item in data.get("items", []):
-            try:
-                await add_to_cart(
-                    session,
-                    user.id,
-                    data["event_id"],
-                    item["menu_item_id"],
-                    item["quantity"],
-                    item.get("modifier_ids", []),
+    if not data.get("request_key"):
+        await message.edit_text("Откройте заказ заново. / Please open your order again.")
+        return
+    stale_cart = None
+    try:
+        async with async_session_factory() as session:
+            user = await session.scalar(
+                select(User).where(User.telegram_id == telegram_id).with_for_update(of=User)
+            )
+            if not user:
+                raise DomainError("Use /start first")
+            event = await get_active_event(session)
+            if event.id != data["event_id"]:
+                raise DomainError("Мероприятие изменилось. Начните заказ заново")
+            event = await session.scalar(
+                select(Event)
+                .where(Event.id == event.id)
+                .with_for_update(of=Event)
+                .execution_options(populate_existing=True)
+            )
+            previous = await session.scalar(
+                select(Order).where(
+                    Order.user_id == user.id,
+                    Order.event_id == event.id,
+                    Order.idempotency_key == data["request_key"],
                 )
-                added.append(f"{item['quantity']} × {item['name']}")
-            except DomainError as exc:
-                errors.append(str(exc))
-        for clause in data.get("unmatched", []):
-            try:
-                await create_special_request(
-                    session,
-                    user.id,
-                    data["event_id"],
-                    clause["text"],
-                    clause["quantity"],
-                    source_transcript=data.get("transcript", ""),
-                )
-                requested.append(f"{clause['quantity']} × {clause['text']}")
-            except DomainError as exc:
-                errors.append(str(exc))
-    lines = []
-    if added:
-        lines.append("Added to cart:" if language == Language.EN.value else "Добавлено в корзину:")
-        lines.extend(f"• {escape(line)}" for line in added)
-    if requested:
-        lines.append(
-            "\nSent to the bartender for confirmation:"
-            if language == Language.EN.value
-            else "\nПередано бармену на подтверждение:"
+            )
+            requests = list(
+                (
+                    await session.scalars(
+                        select(SpecialRequest)
+                        .where(
+                            SpecialRequest.user_id == user.id,
+                            SpecialRequest.event_id == event.id,
+                            SpecialRequest.request_key == data["request_key"],
+                        )
+                        .order_by(SpecialRequest.request_index)
+                    )
+                ).all()
+            )
+            if previous:
+                order = await get_order(session, previous.id)
+            elif requests:
+                order = None
+            else:
+                cart = await get_or_create_cart(session, user.id, event.id, for_update=True)
+                current = _cart_review_items(cart, language)
+                if _cart_signature(current) != _cart_signature(data.get("cart_snapshot", [])):
+                    stale_cart = current
+                else:
+                    for item in data.get("items", []):
+                        await add_to_cart(
+                            session,
+                            user.id,
+                            event.id,
+                            item["menu_item_id"],
+                            item["quantity"],
+                            item.get("modifier_ids", []),
+                            commit=False,
+                        )
+                    for index, clause in enumerate(data.get("unmatched", [])):
+                        request = await create_special_request(
+                            session,
+                            user.id,
+                            event.id,
+                            clause["text"],
+                            clause["quantity"],
+                            source_transcript=data.get("transcript", ""),
+                            commit=False,
+                            request_key=data["request_key"],
+                            request_index=index,
+                        )
+                        requests.append(request)
+                    cart = await get_or_create_cart(session, user.id, event.id)
+                    if cart.items:
+                        order, _, _ = await submit_cart(
+                            session,
+                            user.id,
+                            event.id,
+                            idempotency_key=data["request_key"],
+                            return_creation=True,
+                        )
+                    elif requests:
+                        order = None
+                        await session.commit()
+                    else:
+                        raise DomainError("Заказ пуст. / Your order is empty.")
+    except DomainError as exc:
+        await message.edit_text(
+            escape(str(exc)),
+            reply_markup=voice_review_keyboard(
+                language,
+                data.get("items", []),
+                data.get("unmatched", []),
+                bool(data.get("cart_snapshot")),
+                data.get("request_key", ""),
+            ),
         )
-        lines.extend(f"• {escape(line)}" for line in requested)
-    if errors:
-        lines.append("\n" + escape(errors[0]))
-    if not lines:
+        return
+    if stale_cart is not None:
+        if not stale_cart and not data.get("items") and not data.get("unmatched"):
+            await state.set_state(Waiter.waiting)
+            await state.set_data({"assistant_history": history})
+            await message.edit_text(
+                "Корзина изменилась и теперь пуста. / Your cart changed and is now empty.",
+                reply_markup=waiter_keyboard(language),
+            )
+            return
+        await state.update_data(cart_snapshot=stale_cart, request_key=str(uuid4()))
+        await _show_voice_review(message, state)
+        return
+
+    lines = []
+    if order:
         lines.append(
-            "Nothing was added." if language == Language.EN.value else "Ничего не добавлено."
+            f"Заказ <b>{escape(order.public_number)}</b> отправлен бармену."
+            if language == Language.RU.value
+            else f"Order <b>{escape(order.public_number)}</b> was sent to the bartender."
+        )
+        for item in order.items:
+            name = (
+                item.name_en_snapshot if language == Language.EN.value else item.name_ru_snapshot
+            )
+            modifiers = ", ".join(
+                escape(row.get("name_en" if language == Language.EN.value else "name_ru", ""))
+                for row in item.modifiers_snapshot
+            )
+            suffix = f" ({modifiers})" if modifiers else ""
+            comment = f" — {escape(item.comment)}" if item.comment else ""
+            lines.append(f"• {item.quantity} × {escape(name)}{suffix}{comment}")
+    if requests:
+        lines.append(
+            "\nОсобый запрос передан бармену:"
+            if language == Language.RU.value
+            else "\nSpecial request sent to the bartender:"
+        )
+        lines.extend(
+            f"• {request.quantity} × {escape(request.request_text)}" for request in requests
         )
     lines.append(
-        "\nWould you like anything else?"
-        if language == Language.EN.value
-        else "\nХотите заказать что-нибудь ещё?"
+        "\nХотите заказать что-нибудь ещё?"
+        if language == Language.RU.value
+        else "\nWould you like anything else?"
     )
     response_text = "\n".join(lines)
-    history = _updated_assistant_history(
-        history,
-        "Confirm the current draft",
-        response_text,
-    )
+    history = _updated_assistant_history(history, "Confirm the current order", response_text)
     await state.set_state(Waiter.waiting)
     await state.set_data({"assistant_history": history})
-    await callback.answer()
-    await callback.message.edit_text(
-        response_text,
-        reply_markup=waiter_keyboard(language),
-    )
+    await message.edit_text(response_text, reply_markup=waiter_keyboard(language))
 
 
 @router.callback_query(VoiceOrder.reviewing, F.data == "voice_retry")

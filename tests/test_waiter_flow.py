@@ -7,10 +7,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Chat, Message, User
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.bot import handlers, keyboards
 from app.db import Base
+from app.models import Order, SpecialRequest
 from app.services.assistant import AssistantResponse
 from app.services.orders import add_to_cart, get_active_event, list_event_menu, submit_cart
 from app.services.seed import seed_demo_data
@@ -61,6 +63,11 @@ def callbacks(markup):
     return {button.callback_data for row in markup.inline_keyboard for button in row}
 
 
+async def set_confirm_callback(flow):
+    data = await flow.state.get_data()
+    flow.callback.data = f"voice_confirm:{data['request_key']}"
+
+
 async def test_start_enters_waiter_immediately_and_keeps_saved_language(flow):
     await handlers.start(flow.message, flow.state)
     assert await flow.state.get_state() == handlers.Waiter.waiting.state
@@ -98,7 +105,10 @@ async def test_catalog_navigation_preserves_conversation_and_review(flow):
     assert (await flow.state.get_data())["assistant_history"] == before["assistant_history"]
     flow.callback.data = "open_order"
     await handlers.open_current_order(flow.callback, flow.state)
-    assert "voice_confirm" in callbacks(flow.message.edit_text.call_args.kwargs["reply_markup"])
+    assert any(
+        value.startswith("voice_confirm:")
+        for value in callbacks(flow.message.edit_text.call_args.kwargs["reply_markup"])
+    )
     assert (await flow.state.get_data())["items"] == before["items"]
 
 
@@ -172,7 +182,10 @@ async def test_voice_after_browsing_keeps_history_and_requires_confirmation(flow
     await handlers.receive_voice_order(flow.message, bot, flow.state)
     assert ai.call_args.kwargs["history"] == history
     assert await flow.state.get_state() == handlers.VoiceOrder.reviewing.state
-    assert "voice_confirm" in callbacks(flow.status.edit_text.call_args.kwargs["reply_markup"])
+    assert any(
+        value.startswith("voice_confirm:")
+        for value in callbacks(flow.status.edit_text.call_args.kwargs["reply_markup"])
+    )
     refreshed = await handlers._voice_context(101)
     assert refreshed["current_cart"] == []
 
@@ -202,3 +215,161 @@ async def test_recommendation_button_uses_history_and_cannot_add_items(flow, mon
         "menu",
         "recommend",
     }
+
+
+async def test_waiter_confirm_sends_full_order_and_clears_cart(flow):
+    await handlers.start(flow.message, flow.state)
+    context = await handlers._voice_context(101)
+    first, second = context["assistant_menu"][:2]
+    async with flow.factory() as session:
+        user = await handlers._user(session, 101)
+        await add_to_cart(session, user.id, context["event_id"], first.id, 1)
+    context = await handlers._voice_context(101)
+    result = AssistantResponse(
+        intent="order",
+        reply="Please confirm",
+        items=[{"menu_item_id": second.id, "quantity": 2}],
+    )
+    await handlers._present_assistant_result(
+        flow.status, flow.state, "Two more", context, result, edit=True
+    )
+    review = flow.status.edit_text.call_args.args[0]
+    assert first.name in review and second.name in review
+    await set_confirm_callback(flow)
+    await handlers.confirm_voice_order(flow.callback, flow.state)
+    async with flow.factory() as session:
+        orders = list((await session.scalars(select(Order))).all())
+        cart = await handlers.get_cart(session, user.id, context["event_id"])
+    assert len(orders) == 1
+    assert {item.menu_item_id: item.quantity for item in orders[0].items} == {
+        first.id: 1,
+        second.id: 2,
+    }
+    assert not cart.items
+    assert orders[0].public_number in flow.message.edit_text.call_args.args[0]
+    assert await flow.state.get_state() == handlers.Waiter.waiting.state
+
+
+async def test_send_order_words_require_confirmation_and_text_yes_sends(flow):
+    await handlers.start(flow.message, flow.state)
+    context = await handlers._voice_context(101)
+    item = context["assistant_menu"][0]
+    async with flow.factory() as session:
+        user = await handlers._user(session, 101)
+        await add_to_cart(session, user.id, context["event_id"], item.id, 1)
+    flow.message.text = "Отправь заказ"
+    await handlers.waiter_message(flow.message, flow.state)
+    assert await flow.state.get_state() == handlers.VoiceOrder.reviewing.state
+    assert item.name in flow.status.edit_text.call_args.args[0]
+    async with flow.factory() as session:
+        assert not (await session.scalars(select(Order))).all()
+    flow.message.text = "Да"
+    await handlers.revise_voice_order(flow.message, flow.state)
+    async with flow.factory() as session:
+        assert len((await session.scalars(select(Order))).all()) == 1
+
+
+async def test_waiter_rechecks_changed_cart_before_sending(flow):
+    await handlers.start(flow.message, flow.state)
+    context = await handlers._voice_context(101)
+    first, second = context["assistant_menu"][:2]
+    async with flow.factory() as session:
+        user = await handlers._user(session, 101)
+        await add_to_cart(session, user.id, context["event_id"], first.id, 1)
+    context = await handlers._voice_context(101)
+    await handlers._begin_cart_review(flow.status, flow.state, "Send my order", context)
+    async with flow.factory() as session:
+        await add_to_cart(session, user.id, context["event_id"], second.id, 1)
+    await set_confirm_callback(flow)
+    await handlers.confirm_voice_order(flow.callback, flow.state)
+    async with flow.factory() as session:
+        assert not (await session.scalars(select(Order))).all()
+    assert second.name in flow.message.edit_text.call_args.args[0]
+    await set_confirm_callback(flow)
+    await handlers.confirm_voice_order(flow.callback, flow.state)
+    async with flow.factory() as session:
+        assert len((await session.scalars(select(Order))).all()) == 1
+
+
+async def test_waiter_invalid_item_rolls_back_special_request(flow):
+    await handlers.start(flow.message, flow.state)
+    context = await handlers._voice_context(101)
+    await flow.state.set_state(handlers.VoiceOrder.reviewing)
+    await flow.state.update_data(
+        language=context["language"],
+        event_id=context["event_id"],
+        cart_snapshot=[],
+        request_key="f067cffb-2315-4af5-ac1c-bba0fe65c838",
+        transcript="Unknown drink and bad item",
+        items=[{"menu_item_id": 99999, "quantity": 1, "name": "Bad"}],
+        unmatched=[{"text": "Unknown drink", "quantity": 1}],
+    )
+    await set_confirm_callback(flow)
+    await handlers.confirm_voice_order(flow.callback, flow.state)
+    async with flow.factory() as session:
+        assert not (await session.scalars(select(Order))).all()
+        assert not (await session.scalars(select(SpecialRequest))).all()
+    assert await flow.state.get_state() == handlers.VoiceOrder.reviewing.state
+
+
+async def test_old_review_button_cannot_confirm_revised_order(flow):
+    await handlers.start(flow.message, flow.state)
+    context = await handlers._voice_context(101)
+    first, second = context["assistant_menu"][:2]
+    await handlers._present_assistant_result(
+        flow.status,
+        flow.state,
+        "First",
+        context,
+        AssistantResponse(
+            intent="order", reply="Confirm", items=[{"menu_item_id": first.id, "quantity": 1}]
+        ),
+        edit=True,
+    )
+    await set_confirm_callback(flow)
+    old_callback = flow.callback.data
+    await handlers._present_assistant_result(
+        flow.status,
+        flow.state,
+        "Correction",
+        context,
+        AssistantResponse(
+            intent="order", reply="Confirm", items=[{"menu_item_id": second.id, "quantity": 1}]
+        ),
+        edit=True,
+    )
+    await handlers.confirm_voice_order(flow.callback, flow.state)
+    async with flow.factory() as session:
+        assert not (await session.scalars(select(Order))).all()
+    assert flow.callback.data == old_callback
+    assert flow.callback.answer.call_args.kwargs["show_alert"] is True
+    await set_confirm_callback(flow)
+    await handlers.confirm_voice_order(flow.callback, flow.state)
+    async with flow.factory() as session:
+        order = (await session.scalars(select(Order))).one()
+    assert [item.menu_item_id for item in order.items] == [second.id]
+
+
+async def test_special_only_request_is_idempotent(flow):
+    await handlers.start(flow.message, flow.state)
+    context = await handlers._voice_context(101)
+    await flow.state.set_state(handlers.VoiceOrder.reviewing)
+    await flow.state.update_data(
+        language=context["language"],
+        event_id=context["event_id"],
+        cart_snapshot=[],
+        request_key="ac92d168-e015-4430-a4a8-74bd3597d98c",
+        transcript="Something unknown",
+        items=[],
+        unmatched=[{"text": "Something unknown", "quantity": 1}],
+    )
+    original_data = await flow.state.get_data()
+    await set_confirm_callback(flow)
+    await handlers.confirm_voice_order(flow.callback, flow.state)
+    await flow.state.set_state(handlers.VoiceOrder.reviewing)
+    await flow.state.set_data(original_data)
+    await handlers.confirm_voice_order(flow.callback, flow.state)
+    async with flow.factory() as session:
+        requests = list((await session.scalars(select(SpecialRequest))).all())
+    assert len(requests) == 1
+    assert requests[0].request_key == original_data["request_key"]
