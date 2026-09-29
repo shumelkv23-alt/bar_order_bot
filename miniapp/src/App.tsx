@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, ApiError, type Achievements, type Bootstrap, type Cart, type CartItem, type Language, type Leaderboard, type Menu, type MenuItem, type Order } from './api'
+import { api, ApiError, type Achievements, type Bootstrap, type Cart, type CartItem, type Language, type Leaderboard, type Menu, type MenuItem, type Order, type SecretMenu, type SecretOffer } from './api'
 import { copy } from './i18n'
 import { initTelegram, telegram } from './telegram'
 
-type Screen = 'menu' | 'mystery' | 'top' | 'profile' | 'cart' | 'item' | 'order'
-type Draft = { item: MenuItem; origin: 'menu' | 'mystery' | 'cart'; cartItemId?: number; quantity: number; modifierIds: number[]; comment: string; expectedQuantity?: number }
+type Screen = 'menu' | 'mystery' | 'secret' | 'top' | 'profile' | 'cart' | 'item' | 'order'
+type Draft = { item: MenuItem; origin: 'menu' | 'mystery' | 'secret' | 'cart'; cartItemId?: number; quantity: number; modifierIds: number[]; comment: string; expectedQuantity?: number }
 type MysteryResult = { item: MenuItem; can_reroll: boolean; discovery_token: string }
 
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
@@ -34,6 +34,8 @@ export function App() {
   const [cart, setCart] = useState<Cart | null>(null)
   const [board, setBoard] = useState<Leaderboard | null>(null)
   const [achievements, setAchievements] = useState<Achievements | null>(null)
+  const [secretMenu, setSecretMenu] = useState<SecretMenu | null>(null)
+  const [secretAnswers, setSecretAnswers] = useState<Record<number, string>>({})
   const [newBadge, setNewBadge] = useState<string | null>(null)
   const [quizFeedback, setQuizFeedback] = useState<boolean | null>(null)
   const [screen, setScreen] = useState<Screen>('menu')
@@ -59,11 +61,12 @@ export function App() {
       setLanguage(initial.user.language)
       setOrder(initial.active_order || initial.latest_order)
       if (initial.event) {
-        const [catalog, basket] = await Promise.all([
-          api<Menu>('/menu', initData), api<Cart>('/cart', initData),
+        const [catalog, basket, secrets] = await Promise.all([
+          api<Menu>('/menu', initData), api<Cart>('/cart', initData), api<SecretMenu>('/secret-menu', initData),
         ])
         setMenu(catalog)
         setCart(basket)
+        setSecretMenu(secrets)
       }
       setError('')
       setAuthError(false)
@@ -120,6 +123,15 @@ export function App() {
     setAchievements(await api<Achievements>('/achievements', initData))
   }, [bootstrap?.event, initData])
 
+  const refreshSecrets = useCallback(async () => {
+    if (!bootstrap?.event) return
+    setSecretMenu(await api<SecretMenu>('/secret-menu', initData))
+  }, [bootstrap?.event, initData])
+
+  useEffect(() => {
+    if (screen === 'secret') void refreshSecrets().catch((cause: Error) => setError(cause.message))
+  }, [screen, refreshSecrets])
+
   useEffect(() => {
     if (screen === 'profile') void refreshAchievements().catch((cause: Error) => setError(cause.message))
   }, [screen, refreshAchievements])
@@ -161,7 +173,8 @@ export function App() {
   }
 
   const categories = menu?.categories || []
-  const allItems = categories.flatMap(category => category.items)
+  const catalogItems = categories.flatMap(category => category.items)
+  const allItems = [...catalogItems, ...(secretMenu?.offers.flatMap(offer => offer.item ? [offer.item] : []) || [])]
   const visibleCategories = categories
     .filter(category => categoryId === null || category.id === categoryId)
     .map(category => ({ ...category, items: category.items.filter(item => {
@@ -171,7 +184,7 @@ export function App() {
     }) }))
     .filter(category => category.items.length > 0)
 
-  const openItem = (item: MenuItem, origin: 'menu' | 'mystery' | 'cart', cartItem?: CartItem) => {
+  const openItem = (item: MenuItem, origin: 'menu' | 'mystery' | 'secret' | 'cart', cartItem?: CartItem) => {
     setDraft({
       item, origin, cartItemId: cartItem?.id, quantity: cartItem?.quantity || 1,
       modifierIds: cartItem?.modifier_ids || [], comment: cartItem?.comment || '',
@@ -248,16 +261,25 @@ export function App() {
     })
   }
 
+  const unlockSecret = (offer: SecretOffer) => {
+    void run(async () => {
+      const updated = await api<SecretOffer>(`/secret-menu/${offer.id}/unlock`, initData, 'POST', { answer: secretAnswers[offer.id] || '' })
+      setSecretMenu(current => current ? { offers: current.offers.map(row => row.id === offer.id ? updated : row) } : current)
+      setSecretAnswers(current => ({ ...current, [offer.id]: '' }))
+    })
+  }
+
   const switchLanguage = () => {
     void run(async () => {
       const next: Language = language === 'ru' ? 'en' : 'ru'
       await api('/me/language', initData, 'PUT', { language: next })
-      const [catalog, basket, latest, badges] = await Promise.all([
+      const [catalog, basket, latest, badges, secrets] = await Promise.all([
         api<Menu>('/menu', initData), api<Cart>('/cart', initData),
         api<{ order: Order | null }>('/orders/latest', initData),
         api<Achievements>('/achievements', initData),
+        api<SecretMenu>('/secret-menu', initData),
       ])
-      setLanguage(next); setMenu(catalog); setCart(basket); setOrder(latest.order); setBoard(null); setAchievements(badges); setMystery(null); setQuizFeedback(null)
+      setLanguage(next); setMenu(catalog); setCart(basket); setOrder(latest.order); setBoard(null); setAchievements(badges); setSecretMenu(secrets); setMystery(null); setQuizFeedback(null)
     })
   }
 
@@ -288,14 +310,14 @@ export function App() {
 
     <main className="app-content">
       {screen === 'menu' && <>
-        <div className="section-heading"><h2>{t.menu}</h2><span>{allItems.length}</span></div>
+        <div className="section-heading"><h2>{t.menu}</h2><span>{catalogItems.length}</span></div>
         <label className="search-field"><Icon name="search" size={19} /><span className="sr-only">{t.search}</span><input type="search" placeholder={t.search} value={query} onChange={event => setQuery(event.target.value)} /></label>
         <div className="chip-row" aria-label={t.menu}>
           <button className={categoryId === null ? 'chip chip--active' : 'chip'} onClick={() => setCategoryId(null)}>{t.all}</button>
           {categories.map(category => <button key={category.id} className={categoryId === category.id ? 'chip chip--active' : 'chip'} onClick={() => setCategoryId(category.id)}>{category.name}</button>)}
         </div>
         <label className="filter-row"><input type="checkbox" checked={alcoholFree} onChange={event => setAlcoholFree(event.target.checked)} /><span>{t.noAlcohol}</span></label>
-        {visibleCategories.length === 0 ? <Empty title={allItems.length ? t.emptySearch : t.emptyMenu} /> : visibleCategories.map(category => <section className="category-section" key={category.id}>
+        {visibleCategories.length === 0 ? <Empty title={catalogItems.length ? t.emptySearch : t.emptyMenu} /> : visibleCategories.map(category => <section className="category-section" key={category.id}>
           <h3>{category.name}</h3>
           <div className="menu-list">{category.items.map(item => <button className="menu-item" key={item.id} onClick={() => openItem(item, 'menu')}>
             <div className="menu-item-copy"><strong>{item.name}</strong><span>{item.description || item.ingredients}</span>{item.is_alcoholic && <small>{t.alcoholic}</small>}</div>
@@ -359,6 +381,16 @@ export function App() {
         <button className={`button ${mystery ? 'button--secondary' : 'button--primary'}`} disabled={busy || !event.orders_enabled || (mystery !== null && !mystery.can_reroll)} onClick={drawMystery}>{mystery ? t.again : t.surprise}</button>
       </>}
 
+      {screen === 'secret' && <>
+        <h2 className="screen-title">{t.secretMenu}</h2>
+        <p className="section-intro">{t.secretIntro}</p>
+        {!secretMenu ? <div className="skeleton skeleton-item" /> : secretMenu.offers.length === 0 ? <Empty title={t.secretEmpty} /> : <div className="secret-list">{secretMenu.offers.map(offer => <section className="secret-card" key={offer.id}>
+          <div className="secret-card-head"><span aria-hidden="true">✦</span><small>{offer.remaining} {t.portionsLeft}</small></div>
+          <p className="secret-riddle">{offer.riddle}</p>
+          {!offer.available ? <p className="helper-text">{offer.unavailable_reason === 'sold_out' ? t.soldOut : offer.unavailable_reason === 'upcoming' ? `${t.availableFrom} ${new Date(offer.available_from).toLocaleString(language, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}` : t.secretUnavailable}</p> : offer.item ? <div className="secret-reveal"><strong>{offer.item.name}</strong><p>{offer.item.description || offer.item.ingredients}</p><button className="button button--primary" onClick={() => openItem(offer.item!, 'secret')}>{t.add}</button></div> : <div className="secret-answer"><label className="field-label">{t.riddleAnswer}<input maxLength={120} value={secretAnswers[offer.id] || ''} onChange={event => setSecretAnswers(current => ({ ...current, [offer.id]: event.target.value }))} /></label><button className="button button--primary" disabled={busy || !secretAnswers[offer.id]?.trim()} onClick={() => unlockSecret(offer)}>{t.unlock}</button></div>}
+        </section>)}</div>}
+      </>}
+
       {screen === 'top' && <>
         <h2 className="screen-title">{t.top}</h2><p className="section-intro">{t.topIntro}</p>
         {!board ? <div className="skeleton skeleton-item" /> : board.top.length === 0 ? <Empty title={t.topEmpty} /> : <ol className="leaderboard-list">{board.top.map(entry => <li className={entry.is_me ? 'leaderboard-row leaderboard-row--me' : 'leaderboard-row'} key={entry.rank}><span className="rank">{entry.rank}</span><strong>{entry.name}</strong><span className="score">{entry.score}</span></li>)}</ol>}
@@ -384,7 +416,7 @@ export function App() {
     </main>
 
     {screen !== 'cart' && screen !== 'item' && screen !== 'order' && cartCount > 0 && <button className="cart-floating" onClick={() => { void refreshCart().catch(() => {}); setScreen('cart') }}><span>{t.cart}</span><strong>{cartCount}</strong></button>}
-    {screen !== 'item' && screen !== 'cart' && screen !== 'order' && <nav className="bottom-nav" aria-label="Main navigation"><button className={screen === 'menu' ? 'active' : ''} onClick={() => setScreen('menu')}>{t.menu}</button><button className={screen === 'mystery' ? 'active' : ''} onClick={() => setScreen('mystery')}>{t.mystery}</button><button className={screen === 'top' ? 'active' : ''} onClick={() => setScreen('top')}>{t.top}</button><button className={screen === 'profile' ? 'active' : ''} onClick={() => setScreen('profile')}>{t.profile}</button></nav>}
+    {screen !== 'item' && screen !== 'cart' && screen !== 'order' && <nav className="bottom-nav" aria-label="Main navigation"><button className={screen === 'menu' ? 'active' : ''} onClick={() => setScreen('menu')}>{t.menu}</button><button className={screen === 'mystery' ? 'active' : ''} onClick={() => setScreen('mystery')}>{t.mystery}</button><button className={screen === 'secret' ? 'active' : ''} onClick={() => setScreen('secret')}>{t.secretMenu}</button><button className={screen === 'top' ? 'active' : ''} onClick={() => setScreen('top')}>{t.top}</button><button className={screen === 'profile' ? 'active' : ''} onClick={() => setScreen('profile')}>{t.profile}</button></nav>}
   </div>
 }
 

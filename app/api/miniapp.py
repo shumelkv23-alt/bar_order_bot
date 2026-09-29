@@ -3,6 +3,7 @@
 import logging
 import secrets
 from collections import defaultdict, deque
+from datetime import UTC, datetime
 from time import monotonic
 from typing import Annotated
 from uuid import UUID
@@ -15,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.db import get_session
 from app.domain import Language
-from app.models import Order, User
+from app.models import EventMenuItem, Order, SecretOffer, User
 from app.services.achievements import (
     achievement_collection,
     award_achievement,
@@ -39,6 +40,13 @@ from app.services.orders import (
     set_user_language,
     submit_cart,
     update_cart_item_details,
+)
+from app.services.secret_menu import (
+    answer_matches,
+    as_utc,
+    offer_available,
+    unlock_offer,
+    user_has_unlock,
 )
 
 logger = logging.getLogger(__name__)
@@ -105,6 +113,10 @@ class DiscoveryProof(BaseModel):
     token: str = Field(min_length=1, max_length=200)
 
 
+class SecretAnswer(BaseModel):
+    answer: str = Field(min_length=1, max_length=120)
+
+
 def _english_error(exc: DomainError) -> str:
     message = str(exc)
     if message.startswith("У вас уже есть активный заказ "):
@@ -134,6 +146,11 @@ def _english_error(exc: DomainError) -> str:
         "Активное мероприятие не найдено": "No active event",
         "В этой категории пока нет доступных позиций": "No available items in this category",
         "Сначала найдите знак на экране Мистери": "Find the mark on the Mystery screen first",
+        "Секретная позиция недоступна": "This secret item is unavailable",
+        "Секретная позиция закончилась. Обновите корзину": (
+            "This secret item sold out. Refresh your cart"
+        ),
+        "Неверный ответ на загадку": "That answer does not solve the riddle",
     }
     return translations.get(message, "Please refresh and try again")
 
@@ -307,6 +324,81 @@ async def menu(session: Session, user: Guest) -> dict:
             categories.values(), key=lambda group: (group["sort_order"], group["id"])
         ),
     }
+
+
+async def _secret_view(
+    session: AsyncSession, offer: SecretOffer, user: User, *, orders_enabled: bool = True
+) -> dict:
+    unlocked = await user_has_unlock(session, offer.id, user.id)
+    available = orders_enabled and offer_available(offer)
+    entry = await session.scalar(select(EventMenuItem).where(
+        EventMenuItem.event_id == offer.event_id,
+        EventMenuItem.menu_item_id == offer.menu_item_id,
+    ))
+    available = available and entry is not None and entry.is_available
+    if available:
+        unavailable_reason = None
+    elif offer.portions_used >= offer.portions_total:
+        unavailable_reason = "sold_out"
+    elif datetime.now(UTC) < as_utc(offer.available_from):
+        unavailable_reason = "upcoming"
+    else:
+        unavailable_reason = "unavailable"
+    return {
+        "id": offer.id,
+        "riddle": offer.riddle_en if user.language == "en" else offer.riddle_ru,
+        "available_from": as_utc(offer.available_from).isoformat(),
+        "available_until": as_utc(offer.available_until).isoformat(),
+        "remaining": max(0, offer.portions_total - offer.portions_used),
+        "available": available,
+        "unavailable_reason": unavailable_reason,
+        "unlocked": unlocked,
+        "item": _item_view(entry, user.language) if unlocked and available else None,
+    }
+
+
+@router.get("/secret-menu")
+async def secret_menu(session: Session, user: Guest) -> dict:
+    try:
+        event = await get_active_event(session)
+    except DomainError as exc:
+        raise _error(exc, user.language) from exc
+    offers = (await session.scalars(select(SecretOffer).where(
+        SecretOffer.event_id == event.id,
+        SecretOffer.is_active.is_(True),
+        SecretOffer.available_until > datetime.now(UTC),
+    ).order_by(SecretOffer.available_from, SecretOffer.id))).all()
+    return {
+        "offers": [
+            await _secret_view(session, offer, user, orders_enabled=event.orders_enabled)
+            for offer in offers
+        ]
+    }
+
+
+@router.post("/secret-menu/{offer_id}/unlock")
+async def unlock_secret(
+    offer_id: int, payload: SecretAnswer, session: Session, user: Guest
+) -> dict:
+    _rate_limit(user.id, "secret_answer", 8)
+    try:
+        event = await get_active_event(session)
+        if not event.orders_enabled:
+            raise ConflictError("Приём заказов сейчас закрыт")
+        offer = await session.scalar(select(SecretOffer).where(
+            SecretOffer.id == offer_id, SecretOffer.event_id == event.id
+        ))
+        if offer is None:
+            raise NotFoundError("Секретная позиция недоступна")
+        if not (await _secret_view(session, offer, user))["available"]:
+            raise ConflictError("Секретная позиция недоступна")
+        if not answer_matches(offer, payload.answer):
+            raise ValidationError("Неверный ответ на загадку")
+        await unlock_offer(session, offer.id, user.id)
+        await session.commit()
+        return await _secret_view(session, offer, user)
+    except DomainError as exc:
+        raise _error(exc, user.language) from exc
 
 
 @router.get("/cart")

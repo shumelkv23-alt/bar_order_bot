@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.domain import Language, OrderStatus, SpecialRequestStatus
 
@@ -141,3 +141,61 @@ class MenuItemUpdate(BaseModel):
 
 class AvailabilityUpdate(BaseModel):
     is_available: bool
+
+
+class SecretOfferCreate(BaseModel):
+    event_id: int
+    menu_item_id: int
+    riddle_ru: str = Field(min_length=1, max_length=500)
+    riddle_en: str = Field(min_length=1, max_length=500)
+    answer: str = Field(min_length=1, max_length=120)
+    available_from: datetime
+    available_until: datetime
+    portions_total: int = Field(ge=1, le=10000)
+    is_active: bool = True
+
+    @field_validator("answer")
+    @classmethod
+    def nonblank_answer(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Answer cannot be blank")
+        return value.strip()
+
+    @field_validator("available_from", "available_until")
+    @classmethod
+    def require_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("Availability time must include a timezone")
+        return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def validate_window(self) -> "SecretOfferCreate":
+        if self.available_until <= self.available_from:
+            raise ValueError("available_until must be later than available_from")
+        return self
+
+
+class SecretOfferUpdate(BaseModel):
+    riddle_ru: str | None = Field(default=None, min_length=1, max_length=500)
+    riddle_en: str | None = Field(default=None, min_length=1, max_length=500)
+    answer: str | None = Field(default=None, min_length=1, max_length=120)
+    available_from: datetime | None = None
+    available_until: datetime | None = None
+    portions_total: int | None = Field(default=None, ge=1, le=10000)
+    is_active: bool | None = None
+
+    @field_validator("answer")
+    @classmethod
+    def nonblank_answer(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("Answer cannot be blank")
+        return value.strip() if value is not None else None
+
+    @field_validator("available_from", "available_until")
+    @classmethod
+    def require_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("Availability time must include a timezone")
+        return value.astimezone(UTC)

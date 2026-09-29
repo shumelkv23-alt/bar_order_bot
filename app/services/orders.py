@@ -28,10 +28,18 @@ from app.models import (
     Order,
     OrderItem,
     OrderStatusHistory,
+    SecretOffer,
     SpecialRequest,
     User,
 )
 from app.services.achievements import award_achievement
+from app.services.secret_menu import (
+    offer_available,
+    release_portions,
+    reserve_portions,
+    secret_offer_for_item,
+    user_has_unlock,
+)
 
 
 class DomainError(RuntimeError):
@@ -232,6 +240,7 @@ async def list_event_menu(
     *,
     only_available: bool = True,
     category_id: int | None = None,
+    include_secret: bool = False,
 ) -> list[EventMenuItem]:
     statement = (
         select(EventMenuItem)
@@ -249,10 +258,19 @@ async def list_event_menu(
         statement = statement.where(EventMenuItem.is_available.is_(True))
     if category_id is not None:
         statement = statement.where(MenuItem.category_id == category_id)
+    if not include_secret:
+        statement = statement.where(
+            ~select(SecretOffer.id).where(
+                SecretOffer.event_id == event_id,
+                SecretOffer.menu_item_id == EventMenuItem.menu_item_id,
+            ).exists()
+        )
     return list((await session.scalars(statement)).unique().all())
 
 
-async def get_menu_entry(session: AsyncSession, event_id: int, menu_item_id: int) -> EventMenuItem:
+async def get_menu_entry(
+    session: AsyncSession, event_id: int, menu_item_id: int, *, user_id: int | None = None
+) -> EventMenuItem:
     statement = (
         select(EventMenuItem)
         .where(
@@ -266,6 +284,13 @@ async def get_menu_entry(session: AsyncSession, event_id: int, menu_item_id: int
         raise NotFoundError("Позиция не входит в меню мероприятия")
     if entry.menu_item.is_archived or not entry.menu_item.category.is_active:
         raise ConflictError("Позиция сейчас недоступна")
+    offer = await secret_offer_for_item(session, event_id, menu_item_id)
+    if offer and (
+        user_id is None
+        or not await user_has_unlock(session, offer.id, user_id)
+        or not offer_available(offer)
+    ):
+        raise ConflictError("Секретная позиция недоступна")
     return entry
 
 
@@ -334,7 +359,7 @@ async def add_to_cart(
     if quantity < 1 or quantity > event.max_same_item:
         raise ValidationError(f"Допустимо от 1 до {event.max_same_item} единиц одной позиции")
 
-    entry = await get_menu_entry(session, event_id, menu_item_id)
+    entry = await get_menu_entry(session, event_id, menu_item_id, user_id=user_id)
     if not entry.is_available:
         raise ConflictError("Позиция сейчас недоступна")
 
@@ -468,7 +493,7 @@ async def update_cart_item_details(
         raise ConflictError("Приём заказов сейчас закрыт")
     if quantity < 1 or quantity > event.max_same_item:
         raise ValidationError(f"Одной позиции можно выбрать до {event.max_same_item} штук")
-    entry = await get_menu_entry(session, event_id, cart_item.menu_item_id)
+    entry = await get_menu_entry(session, event_id, cart_item.menu_item_id, user_id=user_id)
     if not entry.is_available:
         raise ConflictError("Позиция сейчас недоступна")
     selected = _selected_modifiers(entry, list(modifier_ids))
@@ -560,7 +585,9 @@ async def submit_cart(
 
     availability = {
         entry.menu_item_id: entry.is_available
-        for entry in await list_event_menu(session, event_id, only_available=False)
+        for entry in await list_event_menu(
+            session, event_id, only_available=False, include_secret=True
+        )
     }
     unavailable = [
         item.menu_item.name_ru for item in cart.items if not availability.get(item.menu_item_id)
@@ -568,7 +595,9 @@ async def submit_cart(
     if unavailable:
         raise ConflictError("Недоступны: " + ", ".join(unavailable))
     for cart_item in cart.items:
-        entry = await get_menu_entry(session, event_id, cart_item.menu_item_id)
+        entry = await get_menu_entry(
+            session, event_id, cart_item.menu_item_id, user_id=user_id
+        )
         try:
             _selected_modifiers(
                 entry,
@@ -578,6 +607,18 @@ async def submit_cart(
             raise ConflictError(
                 f"Изменились добавки для «{cart_item.menu_item.name_ru}». Проверьте корзину"
             ) from exc
+
+    secret_quantities: dict[int, int] = {}
+    secret_by_item: dict[int, int] = {}
+    for cart_item in cart.items:
+        offer = await secret_offer_for_item(session, event_id, cart_item.menu_item_id)
+        if offer:
+            secret_by_item[cart_item.menu_item_id] = offer.id
+            secret_quantities[offer.id] = secret_quantities.get(offer.id, 0) + cart_item.quantity
+    for offer_id, quantity in secret_quantities.items():
+        if not await reserve_portions(session, offer_id, quantity):
+            await session.rollback()
+            raise ConflictError("Секретная позиция закончилась. Обновите корзину")
 
     next_number = await session.scalar(
         update(Event)
@@ -599,6 +640,7 @@ async def submit_cart(
         order.items.append(
             OrderItem(
                 menu_item_id=cart_item.menu_item_id,
+                secret_offer_id=secret_by_item.get(cart_item.menu_item_id),
                 name_ru_snapshot=cart_item.menu_item.name_ru,
                 name_en_snapshot=cart_item.menu_item.name_en,
                 quantity=cart_item.quantity,
@@ -723,6 +765,10 @@ async def reopen_order_for_edit(
             cart.items.append(new_item)
             existing_items[key] = new_item
 
+    for order_item in order.items:
+        if order_item.secret_offer_id:
+            await release_portions(session, order_item.secret_offer_id, order_item.quantity)
+
     previous = order.status
     order.status = OrderStatus.CANCELLED.value
     order.version += 1
@@ -800,6 +846,13 @@ async def transition_order(
         raise ValidationError(str(exc)) from exc
 
     previous = order.status
+    if target in {OrderStatus.CANCELLED, OrderStatus.REJECTED} and previous in {
+        OrderStatus.SUBMITTED.value,
+        OrderStatus.ACCEPTED.value,
+    }:
+        for item in order.items:
+            if item.secret_offer_id:
+                await release_portions(session, item.secret_offer_id, item.quantity)
     order.status = target.value
     order.version += 1
     now = utc_now()

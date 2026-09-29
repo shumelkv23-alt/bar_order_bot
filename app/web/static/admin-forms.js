@@ -8,6 +8,14 @@ window.AdminForms = (() => {
   const names = row => input('name_ru','Название · RU',row.name_ru,'required maxlength="100"') + input('name_en','Название · EN',row.name_en,'required maxlength="100"');
   const local = value => {const date = Panel.isoDate(value);return new Date(date.getTime()-date.getTimezoneOffset()*60000).toISOString().slice(0,16);};
   function fields(kind,row,state) {
+    if (kind==='secrets') {
+      const eventId=row.event_id || state.activeEvent?.id || state.events[0]?.id;
+      const itemId=row.menu_item_id || state.items[0]?.id;
+      const identity=row.id ? `<p class="form-hint wide">Мероприятие #${row.event_id} · ${esc(row.item_name)}</p>` : select('event_id','Мероприятие',state.events.map(item=>[item.id,item.name]),eventId) + select('menu_item_id','Позиция',state.items.filter(item=>!item.is_archived && state.categories.some(category=>category.id===item.category_id && category.is_active)).map(item=>[item.id,item.name_ru]),itemId);
+      const starts=row.available_from || state.activeEvent?.starts_at || new Date().toISOString();
+      const ends=row.available_until || state.activeEvent?.ends_at || new Date(Date.now()+3600000).toISOString();
+      return identity + area('riddle_ru','Загадка · RU',row.riddle_ru) + area('riddle_en','Загадка · EN',row.riddle_en) + input('answer',row.id?'Новый ответ (необязательно)':'Ответ', '',row.id?'maxlength="120"':'required maxlength="120"',true) + '<p class="form-hint wide">Ответ гостя сравнивается без учёта регистра и лишних пробелов. Текущий ответ не показывается.</p>' + input('available_from','Доступно с',local(starts),'required type="datetime-local"') + input('available_until','Доступно до',local(ends),'required type="datetime-local"') + input('portions_total','Всего порций',row.portions_total ?? 10,`required type="number" min="${Math.max(1,row.portions_used || 0)}" max="10000"`) + check('is_active','Предложение активно',row.is_active ?? true);
+    }
     if (kind==='events') return input('name','Название',row.name,'required minlength="2" maxlength="160"',true) + input('code','Код',row.code,'required pattern="[a-zA-Z0-9_-]{2,24}" minlength="2" maxlength="24" placeholder="azati_party"') + '<p class="form-hint">Код для ссылки на мероприятие: латинские буквы, цифры, дефис или подчёркивание.</p>' + input('starts_at','Начало',local(row.starts_at || new Date().toISOString()),'required type="datetime-local"') + input('ends_at','Окончание',local(row.ends_at || new Date(Date.now()+21600000).toISOString()),'required type="datetime-local"') + input('max_items_per_order','Всего единиц в заказе',row.max_items_per_order ?? 5,'type="number" min="1" max="30" required') + input('max_same_item','Единиц одной позиции',row.max_same_item ?? 3,'type="number" min="1" max="10" required') + check('orders_enabled','Принимать заказы, когда мероприятие активно',row.orders_enabled ?? true) + (!row.id ? check('include_catalog','Добавить текущий каталог',true) : '') + '<p class="form-hint wide">Время указано в часовом поясе этого устройства. Пауза не закрывает мероприятие.</p>';
     if (kind==='categories') return names(row) + input('sort_order','Порядок показа',row.sort_order ?? 0,'type="number" required') + check('is_active','Категория активна',row.is_active ?? true) + '<p class="form-hint wide">Выключение категории скрывает её позиции из меню для гостей.</p>';
     if (kind==='modifiers') return names(row) + select('kind','Тип',[['ice','Лёд'],['variant','Вариант'],['extra','Добавка'],...(!['ice','variant','extra',undefined].includes(row.kind) ? [[row.kind,row.kind]] : [])],row.kind || 'extra') + input('aliases','Альтернативные названия',(row.aliases || []).join(', '),'placeholder="без льда, no ice"',true) + check('is_active','Модификатор активен',row.is_active ?? true);
@@ -18,6 +26,13 @@ window.AdminForms = (() => {
   }
   function payload(kind,form,row) {
     const data = new FormData(form), value = key => String(data.get(key) ?? '').trim(), number = key => Number(value(key)), checked = key => data.has(key), aliases = key => value(key).split(',').map(item => item.trim()).filter(Boolean);
+    if (kind==='secrets') {
+      if (new Date(value('available_until')) <= new Date(value('available_from'))) throw new Error('Окончание доступности должно быть позже начала.');
+      const body={riddle_ru:value('riddle_ru'),riddle_en:value('riddle_en'),available_from:new Date(value('available_from')).toISOString(),available_until:new Date(value('available_until')).toISOString(),portions_total:number('portions_total'),is_active:checked('is_active')};
+      if(value('answer'))body.answer=value('answer');
+      if(!row.id){body.event_id=number('event_id');body.menu_item_id=number('menu_item_id');if(!body.answer)throw new Error('Укажите ответ на загадку.');}
+      return body;
+    }
     if (kind==='events') {
       if (new Date(value('ends_at')) <= new Date(value('starts_at'))) throw new Error('Окончание должно быть позже начала.');
       if (number('max_same_item') > number('max_items_per_order')) throw new Error('Лимит одной позиции не может превышать общий лимит.');

@@ -15,6 +15,7 @@ from app.models import (
     MenuItemModifier,
     Modifier,
     Order,
+    SecretOffer,
     SpecialRequest,
 )
 from app.schemas import (
@@ -27,8 +28,11 @@ from app.schemas import (
     MenuItemUpdate,
     ModifierCreate,
     ModifierUpdate,
+    SecretOfferCreate,
+    SecretOfferUpdate,
 )
 from app.services.orders import DomainError, get_active_event, list_event_menu
+from app.services.secret_menu import as_utc, set_answer
 
 from .dependencies import require_admin
 from .errors import domain_http_error
@@ -97,6 +101,22 @@ def _menu_item_dict(item: MenuItem) -> dict[str, Any]:
     }
 
 
+def _secret_offer_dict(offer: SecretOffer) -> dict[str, Any]:
+    return {
+        "id": offer.id,
+        "event_id": offer.event_id,
+        "menu_item_id": offer.menu_item_id,
+        "item_name": offer.menu_item.name_ru,
+        "riddle_ru": offer.riddle_ru,
+        "riddle_en": offer.riddle_en,
+        "available_from": as_utc(offer.available_from).isoformat(),
+        "available_until": as_utc(offer.available_until).isoformat(),
+        "portions_total": offer.portions_total,
+        "portions_used": offer.portions_used,
+        "is_active": offer.is_active,
+    }
+
+
 async def _get_event_or_404(session: AsyncSession, event_id: int) -> Event:
     event = await session.scalar(
         select(Event).where(Event.id == event_id).options(selectinload(Event.menu_items))
@@ -133,7 +153,9 @@ async def _load_modifiers(session: AsyncSession, modifier_ids: list[int]) -> lis
 async def admin_menu(session: Session, _role: AdminRole, event_code: str | None = None) -> dict:
     try:
         event = await get_active_event(session, event_code)
-        entries = await list_event_menu(session, event.id, only_available=False)
+        entries = await list_event_menu(
+            session, event.id, only_available=False, include_secret=True
+        )
     except DomainError as exc:
         raise domain_http_error(exc) from exc
     return {
@@ -497,3 +519,71 @@ async def toggle_orders(
     event.orders_enabled = payload.is_available
     await session.commit()
     return {"event_id": event.id, "orders_enabled": event.orders_enabled}
+
+
+@router.get("/secret-offers")
+async def list_secret_offers(session: Session, _role: AdminRole) -> dict:
+    offers = (await session.scalars(
+        select(SecretOffer).order_by(SecretOffer.event_id.desc(), SecretOffer.id.desc())
+    )).all()
+    return {"offers": [_secret_offer_dict(offer) for offer in offers]}
+
+
+@router.post("/secret-offers", status_code=status.HTTP_201_CREATED)
+async def create_secret_offer(
+    payload: SecretOfferCreate, session: Session, _role: AdminRole
+) -> dict:
+    event = await session.get(Event, payload.event_id)
+    item = await session.get(MenuItem, payload.menu_item_id)
+    if not event or not item or item.is_archived or not item.category.is_active:
+        raise HTTPException(status_code=404, detail="Event or menu item not found")
+    duplicate = await session.scalar(select(SecretOffer.id).where(
+        SecretOffer.event_id == event.id,
+        SecretOffer.menu_item_id == item.id,
+    ))
+    if duplicate is not None:
+        raise HTTPException(status_code=409, detail="Secret offer already exists")
+    offer = SecretOffer(**payload.model_dump(exclude={"answer"}))
+    set_answer(offer, payload.answer)
+    session.add(offer)
+    entry = await session.scalar(select(EventMenuItem).where(
+        EventMenuItem.event_id == event.id,
+        EventMenuItem.menu_item_id == item.id,
+    ))
+    if entry is None:
+        session.add(EventMenuItem(event_id=event.id, menu_item_id=item.id, is_available=True))
+    else:
+        entry.is_available = True
+    await session.commit()
+    return _secret_offer_dict(offer)
+
+
+@router.patch("/secret-offers/{offer_id}")
+async def update_secret_offer(
+    offer_id: int, payload: SecretOfferUpdate, session: Session, _role: AdminRole
+) -> dict:
+    offer = await session.scalar(
+        select(SecretOffer)
+        .where(SecretOffer.id == offer_id)
+        .with_for_update(of=SecretOffer)
+        .execution_options(populate_existing=True)
+    )
+    if offer is None:
+        raise HTTPException(status_code=404, detail="Secret offer not found")
+    changes = payload.model_dump(exclude_unset=True)
+    if any(value is None for value in changes.values()):
+        raise HTTPException(status_code=422, detail="Null values are not allowed")
+    starts = changes.get("available_from", offer.available_from)
+    ends = changes.get("available_until", offer.available_until)
+    starts = as_utc(starts)
+    ends = as_utc(ends)
+    if ends <= starts:
+        raise HTTPException(status_code=422, detail="Invalid availability window")
+    if changes.get("portions_total", offer.portions_total) < offer.portions_used:
+        raise HTTPException(status_code=409, detail="Portion limit is below used portions")
+    if "answer" in changes:
+        set_answer(offer, changes.pop("answer"))
+    for field, value in changes.items():
+        setattr(offer, field, value)
+    await session.commit()
+    return _secret_offer_dict(offer)

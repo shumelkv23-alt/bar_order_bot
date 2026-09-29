@@ -27,6 +27,11 @@ const strings = {
     achievementUnlocked: 'Новая ачивка', firstContact: 'Первый контакт',
     pathfinder: 'Следопыт', connoisseur: 'Знаток',
     quiz: 'Викторина', quizCorrect: 'Верно! Значок ваш.', quizWrong: 'Пока неверно. Попробуйте ещё раз.',
+    secretMenu: 'Секрет', secretIntro: 'Разгадайте загадку, чтобы открыть напиток вечера. Порций немного.',
+    secretEmpty: 'Секретное меню пока закрыто', portionsLeft: 'порций осталось',
+    soldOut: 'Порции закончились', availableFrom: 'Доступно с',
+    secretUnavailable: 'Сейчас недоступно',
+    riddleAnswer: 'Ваш ответ', unlock: 'Открыть позицию',
   },
   en: {
     menu: 'Menu', mystery: 'Mystery', top: 'Tonight’s top', cart: 'Order',
@@ -54,6 +59,11 @@ const strings = {
     achievementUnlocked: 'New badge', firstContact: 'First contact',
     pathfinder: 'Pathfinder', connoisseur: 'Connoisseur',
     quiz: 'Quiz', quizCorrect: 'Correct! The badge is yours.', quizWrong: 'Not quite. Try again.',
+    secretMenu: 'Secret', secretIntro: 'Solve the riddle to reveal tonight’s drink. Portions are limited.',
+    secretEmpty: 'The secret menu is closed for now', portionsLeft: 'portions left',
+    soldOut: 'Sold out', availableFrom: 'Available from',
+    secretUnavailable: 'Unavailable right now',
+    riddleAnswer: 'Your answer', unlock: 'Reveal item',
   },
 } as const
 

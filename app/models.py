@@ -229,12 +229,43 @@ class EventAchievement(Base):
     awarded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class SecretOffer(TimestampMixin, Base):
+    __tablename__ = "secret_offers"
+    __table_args__ = (UniqueConstraint("event_id", "menu_item_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), index=True)
+    menu_item_id: Mapped[int] = mapped_column(ForeignKey("menu_items.id"), index=True)
+    riddle_ru: Mapped[str] = mapped_column(String(500))
+    riddle_en: Mapped[str] = mapped_column(String(500))
+    answer_salt: Mapped[str] = mapped_column(String(32))
+    answer_hash: Mapped[str] = mapped_column(String(64))
+    available_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    available_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    portions_total: Mapped[int] = mapped_column(Integer)
+    portions_used: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    menu_item: Mapped[MenuItem] = relationship(lazy="joined")
+
+
+class SecretUnlock(Base):
+    __tablename__ = "secret_unlocks"
+    __table_args__ = (UniqueConstraint("offer_id", "user_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    offer_id: Mapped[int] = mapped_column(ForeignKey("secret_offers.id", ondelete="CASCADE"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    unlocked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class OrderItem(Base):
     __tablename__ = "order_items"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     order_id: Mapped[int] = mapped_column(ForeignKey("orders.id", ondelete="CASCADE"))
     menu_item_id: Mapped[int | None] = mapped_column(ForeignKey("menu_items.id"))
+    secret_offer_id: Mapped[int | None] = mapped_column(ForeignKey("secret_offers.id"))
     name_ru_snapshot: Mapped[str] = mapped_column(String(120))
     name_en_snapshot: Mapped[str] = mapped_column(String(120))
     quantity: Mapped[int] = mapped_column(Integer)

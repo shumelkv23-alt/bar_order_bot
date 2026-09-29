@@ -11,17 +11,26 @@ from uuid import uuid4
 import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api import miniapp
+from app.api.admin import create_secret_offer, update_secret_offer
 from app.db import Base, get_session
 from app.domain import OrderStatus
 from app.main import app
+from app.models import MenuItem, User
+from app.schemas import SecretOfferCreate, SecretOfferUpdate
 from app.services import miniapp_leaderboard
 from app.services.miniapp_auth import InvalidInitData, verify_init_data
-from app.services.orders import get_active_event, list_staff_orders, transition_order
+from app.services.orders import (
+    get_active_event,
+    list_staff_orders,
+    reopen_order_for_edit,
+    transition_order,
+)
 from app.services.seed import seed_demo_data
 
 BOT_TOKEN = "123456:test-token"
@@ -98,6 +107,41 @@ def test_achievements_migration_upgrades_existing_schema(monkeypatch):
             {column["name"] for column in schema.get_columns("event_achievements")}
         )
     engine.dispose()
+
+
+def test_secret_menu_migration_upgrades_existing_schema(monkeypatch):
+    path = Path(__file__).resolve().parents[1] / "alembic/versions/20260929_0004_secret_menu.py"
+    spec = importlib.util.spec_from_file_location("secret_menu_migration", path)
+    assert spec and spec.loader
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        for table in ("users", "events", "menu_items", "order_items"):
+            connection.exec_driver_sql(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)")
+        operations = Operations(MigrationContext.configure(connection))
+        monkeypatch.setattr(migration, "op", operations)
+        migration.upgrade()
+        migration.upgrade()
+        schema = inspect(connection)
+        assert {"secret_offers", "secret_unlocks"}.issubset(schema.get_table_names())
+        assert "secret_offer_id" in {
+            column["name"] for column in schema.get_columns("order_items")
+        }
+    engine.dispose()
+
+
+def test_secret_offer_requires_timezone():
+    with pytest.raises(ValueError, match="timezone"):
+        SecretOfferCreate(
+            event_id=1, menu_item_id=1,
+            riddle_ru="Загадка", riddle_en="Riddle", answer="Ответ",
+            available_from=datetime(2026, 9, 29, 18),
+            available_until=datetime(2026, 9, 29, 19, tzinfo=UTC),
+            portions_total=1,
+        )
+    with pytest.raises(ValueError, match="blank"):
+        SecretOfferUpdate(answer="   ")
 
 
 @pytest.fixture
@@ -252,6 +296,134 @@ async def test_achievements_are_awarded_once_and_kept_in_profile(miniapp_client)
         profile_url, headers={"X-Telegram-Init-Data": signed_data(404)}
     )).json()
     assert all(badge["awarded_at"] is None for badge in other_profile["achievements"])
+
+
+async def test_secret_menu_unlock_window_stock_and_cancellation(miniapp_client):
+    client, factory = miniapp_client
+    first_headers = {"X-Telegram-Init-Data": signed_data(501)}
+    second_headers = {"X-Telegram-Init-Data": signed_data(502)}
+    catalog = (await client.get("/api/v1/miniapp/menu", headers=first_headers)).json()
+    item_id = catalog["categories"][0]["items"][0]["id"]
+    now = datetime.now(UTC)
+    async with factory() as session:
+        event = await get_active_event(session)
+        offer = await create_secret_offer(
+            SecretOfferCreate(
+                event_id=event.id, menu_item_id=item_id,
+                riddle_ru="Что растёт в саду?", riddle_en="What grows in a garden?",
+                answer="Мята", available_from=now + timedelta(minutes=10),
+                available_until=now + timedelta(hours=1), portions_total=1,
+            ), session, "admin",
+        )
+    offer_id = offer["id"]
+    assert offer["available_from"].endswith("+00:00")
+    secret_url = "/api/v1/miniapp/secret-menu"
+    menu_after = (await client.get("/api/v1/miniapp/menu", headers=first_headers)).json()
+    assert item_id not in {
+        item["id"] for category in menu_after["categories"] for item in category["items"]
+    }
+    assert (await client.post(
+        "/api/v1/miniapp/cart/items", headers=first_headers,
+        json={"menu_item_id": item_id, "quantity": 1},
+    )).status_code == 409
+    upcoming = (await client.get(secret_url, headers=first_headers)).json()["offers"][0]
+    assert upcoming["item"] is None and upcoming["available"] is False
+    assert upcoming["available_from"].endswith("+00:00")
+    assert (await client.post(
+        f"{secret_url}/{offer_id}/unlock", headers=first_headers, json={"answer": "Мята"}
+    )).status_code == 409
+
+    async with factory() as session:
+        await update_secret_offer(
+            offer_id, SecretOfferUpdate(available_from=now - timedelta(minutes=1)),
+            session, "admin",
+        )
+    assert (await client.post(
+        f"{secret_url}/{offer_id}/unlock", headers=first_headers, json={"answer": "укроп"}
+    )).status_code == 422
+    revealed = (await client.post(
+        f"{secret_url}/{offer_id}/unlock", headers=first_headers,
+        json={"answer": "  МЯТА  "},
+    )).json()
+    assert revealed["item"]["id"] == item_id
+    second_offer = (await client.get(secret_url, headers=second_headers)).json()["offers"][0]
+    assert second_offer["item"] is None
+    second_unlock = await client.post(
+        f"{secret_url}/{offer_id}/unlock", headers=second_headers, json={"answer": "мята"}
+    )
+    assert second_unlock.status_code == 200
+    second_added = await client.post(
+        "/api/v1/miniapp/cart/items", headers=second_headers,
+        json={"menu_item_id": item_id, "quantity": 1},
+    )
+    assert second_added.status_code == 200
+
+    added = await client.post(
+        "/api/v1/miniapp/cart/items", headers=first_headers,
+        json={"menu_item_id": item_id, "quantity": 1},
+    )
+    assert added.status_code == 200
+    ordered = await client.post(
+        "/api/v1/miniapp/orders", headers=first_headers,
+        json={"comment": "", "idempotency_key": str(uuid4())},
+    )
+    assert ordered.status_code == 200
+    after_order = (await client.get(secret_url, headers=first_headers)).json()["offers"][0]
+    assert after_order["remaining"] == 0
+    second_payload = {"comment": "", "idempotency_key": str(uuid4())}
+    sold_out_order = await client.post(
+        "/api/v1/miniapp/orders", headers=second_headers, json=second_payload
+    )
+    assert sold_out_order.status_code == 409
+    async with factory() as session:
+        await transition_order(session, ordered.json()["id"], OrderStatus.CANCELLED, actor="test")
+    after_cancel = (await client.get(secret_url, headers=first_headers)).json()["offers"][0]
+    assert after_cancel["remaining"] == 1
+    second_order = await client.post(
+        "/api/v1/miniapp/orders", headers=second_headers, json=second_payload
+    )
+    assert second_order.status_code == 200
+    after_second = (await client.get(secret_url, headers=first_headers)).json()["offers"][0]
+    assert after_second["remaining"] == 0
+    async with factory() as session:
+        _, restored_cart = await reopen_order_for_edit(
+            session, second_order.json()["id"],
+            (await session.scalar(select(User.id).where(User.telegram_id == 502))),
+            expected_version=second_order.json()["version"], actor="test",
+        )
+        assert restored_cart.items[0].menu_item_id == item_id
+    after_edit = (await client.get(secret_url, headers=first_headers)).json()["offers"][0]
+    assert after_edit["remaining"] == 1
+    async with factory() as session:
+        event = await get_active_event(session)
+        event.orders_enabled = False
+        await session.commit()
+    paused = (await client.get(secret_url, headers=first_headers)).json()["offers"][0]
+    assert paused["available"] is False
+    assert paused["unavailable_reason"] == "unavailable"
+
+
+async def test_secret_offer_rejects_inactive_category(miniapp_client):
+    client, factory = miniapp_client
+    headers = {"X-Telegram-Init-Data": signed_data(601)}
+    menu = (await client.get("/api/v1/miniapp/menu", headers=headers)).json()
+    item_id = menu["categories"][0]["items"][0]["id"]
+    async with factory() as session:
+        event = await get_active_event(session)
+        item = await session.get(MenuItem, item_id)
+        item.category.is_active = False
+        await session.commit()
+        now = datetime.now(UTC)
+        with pytest.raises(HTTPException) as error:
+            await create_secret_offer(
+                SecretOfferCreate(
+                    event_id=event.id, menu_item_id=item_id,
+                    riddle_ru="Загадка", riddle_en="Riddle", answer="Ответ",
+                    available_from=now, available_until=now + timedelta(hours=1),
+                    portions_total=1,
+                ), session, "admin",
+            )
+        assert error.value.status_code == 404
 
 
 async def test_miniapp_requires_auth_and_isolates_carts(miniapp_client):

@@ -73,8 +73,8 @@ input[type="checkbox"] { width: 19px; height: 19px; margin: 0; accent-color: var
 .menu-item-copy small, .mystery-result small { color: var(--orange-bright); font-size: 12px; font-weight: 600; }
 .item-photo { display: block; width: 72px; height: 72px; object-fit: cover; border-radius: 10px; background: var(--surface-raised); }
 .item-photo--empty { display: grid; place-items: center; border: 1px solid var(--line); color: var(--orange-bright); font-family: PlexSerif, Georgia, serif; font-style: italic; font-size: 34px; font-weight: 400; }
-.bottom-nav { position: fixed; z-index: 20; bottom: 0; left: 0; right: 0; display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; max-width: 760px; margin: 0 auto; padding: 8px 16px calc(8px + env(safe-area-inset-bottom, 0px)); background: #0c1525; border-top: 1px solid var(--line); }
-.bottom-nav button { min-height: 47px; padding: 7px 4px; border: 0; border-radius: 10px; background: transparent; color: var(--muted); font-size: 14px; font-weight: 600; white-space: nowrap; }
+.bottom-nav { position: fixed; z-index: 20; bottom: 0; left: 0; right: 0; display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; max-width: 760px; margin: 0 auto; padding: 8px 16px calc(8px + env(safe-area-inset-bottom, 0px)); background: #0c1525; border-top: 1px solid var(--line); }
+.bottom-nav button { min-height: 47px; padding: 7px 2px; border: 0; border-radius: 10px; background: transparent; color: var(--muted); font-size: clamp(11px, 3vw, 14px); font-weight: 600; white-space: nowrap; }
 .bottom-nav button.active { color: #fff; background: #154d4c; box-shadow: inset 0 2px 0 var(--teal-bright); }
 .cart-floating { position: fixed; z-index: 19; bottom: calc(74px + env(safe-area-inset-bottom, 0px)); left: 50%; transform: translateX(-50%); display: flex; align-items: center; justify-content: space-between; gap: 20px; width: min(calc(100% - 32px), 728px); min-height: 52px; padding: 7px 12px 7px 18px; color: #fff; background: var(--teal); border: 1px solid var(--teal-bright); border-radius: 10px; font-weight: 700; box-shadow: 0 12px 28px rgb(0 0 0 / .25); }
 .cart-floating:active { transform: translateX(-50%) translateY(1px); }
@@ -157,6 +157,16 @@ input[type="checkbox"] { width: 19px; height: 19px; margin: 0; accent-color: var
 .quiz-card p { color: var(--muted); line-height: 1.45; }
 .quiz-options { display: grid; gap: 8px; }
 .quiz-feedback { margin-bottom: 0; }
+.secret-list { display: grid; gap: 14px; }
+.secret-card { padding: 18px; border: 1px solid #816347; border-radius: 12px; background: #1b202d; }
+.secret-card-head { display: flex; align-items: center; justify-content: space-between; color: var(--orange-bright); }
+.secret-card-head span { font-size: 28px; }
+.secret-card-head small { color: var(--muted); }
+.secret-riddle { margin: 12px 0 20px; font-family: PlexSerif, Georgia, serif; font-size: 21px; font-style: italic; line-height: 1.4; }
+.secret-reveal { border-top: 1px solid var(--line); padding-top: 18px; }
+.secret-reveal strong { font-size: 19px; }
+.secret-reveal p { color: var(--muted); line-height: 1.45; }
+.secret-answer input { width: 100%; min-height: 46px; padding: 10px 12px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
 .achievement-toast { position: fixed; z-index: 30; top: calc(12px + env(safe-area-inset-top, 0px)); left: 50%; display: flex; align-items: center; gap: 12px; width: min(calc(100% - 32px), 420px); padding: 14px 18px; border: 1px solid var(--orange-bright); border-radius: 12px; background: #302820; color: var(--text); box-shadow: 0 16px 40px rgb(0 0 0 / .38); transform: translateX(-50%); }
 .achievement-toast-symbol { color: var(--orange-bright); font-size: 34px; }
 .achievement-toast strong { display: block; margin-top: 2px; }
