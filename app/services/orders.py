@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import csv
 from datetime import UTC, datetime
+from functools import wraps
 from io import StringIO
 from typing import Any
+from weakref import WeakValueDictionary
 
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,6 +62,21 @@ class ConflictError(DomainError):
 
 class ValidationError(DomainError):
     pass
+
+
+_sqlite_order_locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
+
+
+def serialize_sqlite_order_write(function):
+    @wraps(function)
+    async def wrapped(session: AsyncSession, order_id: int, *args, **kwargs):
+        if session.bind.dialect.name != "sqlite":
+            return await function(session, order_id, *args, **kwargs)
+        lock = _sqlite_order_locks.setdefault(order_id, asyncio.Lock())
+        async with lock:
+            return await function(session, order_id, *args, **kwargs)
+
+    return wrapped
 
 
 SPECIAL_REQUEST_TRANSITIONS = {
@@ -731,6 +749,7 @@ async def get_order(
     return order
 
 
+@serialize_sqlite_order_write
 async def reopen_order_for_edit(
     session: AsyncSession,
     order_id: int,
@@ -933,6 +952,7 @@ def prep_batches(orders: list[Order]) -> list[dict[str, Any]]:
     return batches
 
 
+@serialize_sqlite_order_write
 async def transition_order(
     session: AsyncSession,
     order_id: int,
@@ -945,6 +965,8 @@ async def transition_order(
     order = await get_order(session, order_id, for_update=True)
     if expected_version is not None and order.version != expected_version:
         raise ConflictError("Заказ уже изменился. Обновите очередь и повторите действие")
+    if actor == "system:auto" and target == OrderStatus.READY:
+        raise ConflictError("Готовность заказа подтверждает только сотрудник")
     try:
         ensure_transition(order.status, target)
     except ValueError as exc:
@@ -1001,6 +1023,7 @@ async def transition_order(
     return await get_order(session, order.id)
 
 
+@serialize_sqlite_order_write
 async def confirm_auto_closed_order(
     session: AsyncSession,
     order_id: int,
@@ -1186,6 +1209,13 @@ def cart_to_dict(cart: Cart, language: str = Language.RU.value) -> dict[str, Any
 
 
 def order_to_dict(order: Order, language: str = Language.RU.value) -> dict[str, Any]:
+    progress_started_at = None
+    if order.next_transition_at and order.auto_queue_size_snapshot:
+        progress_started_at = order.next_transition_at - stage_delay(
+            order.status,
+            order.auto_queue_size_snapshot,
+            sum(item.quantity for item in order.items),
+        )
     return {
         "id": order.id,
         "public_number": order.public_number,
@@ -1195,6 +1225,7 @@ def order_to_dict(order: Order, language: str = Language.RU.value) -> dict[str, 
         "next_transition_at": (
             order.next_transition_at.isoformat() if order.next_transition_at else None
         ),
+        "progress_started_at": progress_started_at.isoformat() if progress_started_at else None,
         "auto_queue_size_snapshot": order.auto_queue_size_snapshot,
         "completed_automatically": order.completed_automatically,
         "status_automatically": order.status_automatically,

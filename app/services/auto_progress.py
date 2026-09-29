@@ -32,18 +32,10 @@ AUTO_STAGE_MESSAGES = {
     Language.RU: {
         OrderStatus.ACCEPTED: "Заказ {number} автоматически переведён в очередь бармена.",
         OrderStatus.PREPARING: "Заказ {number} перешёл к расчётному этапу приготовления.",
-        OrderStatus.READY: (
-            "Расчётное время приготовления заказа {number} прошло. "
-            "Уточните у бармена, готов ли напиток."
-        ),
     },
     Language.EN: {
         OrderStatus.ACCEPTED: "Order {number} was automatically added to the bartender queue.",
         OrderStatus.PREPARING: "Order {number} reached its estimated preparation stage.",
-        OrderStatus.READY: (
-            "The estimated preparation time for order {number} has passed. "
-            "Please ask the bartender whether your drink is ready."
-        ),
     },
 }
 
@@ -107,7 +99,7 @@ async def process_due_orders(
                 .join(Event)
                 .where(
                     Event.status == EventStatus.ACTIVE.value,
-                    Order.status.in_(ACTIVE),
+                    Order.status.in_(list(NEXT_STATUS)),
                     Order.next_transition_at <= now,
                 )
                 .order_by(Order.next_transition_at, Order.id)
@@ -126,13 +118,15 @@ async def process_due_orders(
             if deadline > now or order.event.status != EventStatus.ACTIVE.value:
                 continue
             target = NEXT_STATUS[order.status]
+            expected_version = order.version
+            await session.commit()
             try:
                 updated = await transition_order(
                     session,
                     order_id,
                     target,
                     actor="system:auto",
-                    expected_version=order.version,
+                    expected_version=expected_version,
                     reason="stage deadline elapsed",
                 )
             except DomainError:

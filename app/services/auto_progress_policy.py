@@ -16,7 +16,6 @@ STAGE_SECONDS = {
 NEXT_STATUS = {
     OrderStatus.SUBMITTED.value: OrderStatus.ACCEPTED,
     OrderStatus.ACCEPTED.value: OrderStatus.PREPARING,
-    OrderStatus.PREPARING.value: OrderStatus.READY,
     OrderStatus.READY.value: OrderStatus.COMPLETED,
 }
 

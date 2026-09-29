@@ -9,8 +9,24 @@
   function ageLabel(iso) { const level = urgency(iso); return `<span class="age" title="С момента создания: ${esc(Panel.date(iso))}">${level ? (level === 'critical' ? 'Долго · ' : 'Ожидает · ') : ''}${age(iso)} мин</span>`; }
   function card(order) {
     const [target,label] = next[order.status];
-    const deadline = data.configuration.auto_progress_enabled && order.next_transition_at ? `<p class="auto-deadline">${order.status === 'ready' ? 'Автозакрытие' : 'Автопереход'}: ${esc(Panel.date(order.next_transition_at))}</p>` : '';
-    return `<article class="order-card ${urgency(order.created_at)}" data-key="o${order.id}"><div class="card-top"><span class="order-number">${esc(order.public_number)}</span>${ageLabel(order.created_at)}</div><p class="guest">${esc(order.guest)}</p>${order.status_automatically ? '<p class="auto-deadline">Расчётный этап · сотрудник ещё не подтвердил</p>' : ''}<ul class="items">${order.items.map(item => `<li><b>${item.quantity} × ${esc(item.name)}</b>${item.modifiers.length ? `<div class="modifiers">${item.modifiers.map(esc).join(' · ')}</div>` : ''}</li>`).join('')}</ul>${order.comment ? `<p class="order-comment">${esc(order.comment)}</p>` : ''}${deadline}<div class="card-actions"><button class="primary" data-id="${order.id}" data-action="${target}" data-version="${order.version}">${label}${icon('arrow')}</button>${order.status !== 'ready' ? `<button class="cancel" data-id="${order.id}" data-action="cancelled" data-version="${order.version}" aria-label="Отменить заказ ${esc(order.public_number)}">Отменить</button>` : ''}</div></article>`;
+    const progress = data.configuration.auto_progress_enabled && order.next_transition_at && order.progress_started_at
+      ? `<div class="order-progress" data-progress-start="${esc(order.progress_started_at)}" data-progress-end="${esc(order.next_transition_at)}" data-progress-stage="${esc(order.status)}"><div class="order-progress-heading"><span>${order.status === 'preparing' ? 'Ориентир готовности · подтвердите вручную' : order.status === 'ready' ? 'До автозакрытия' : 'До автоперехода'}</span><time data-progress-remaining></time></div><div class="order-progress-track" role="progressbar" aria-label="Время этапа заказа ${esc(order.public_number)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span data-progress-fill></span></div></div>`
+      : '';
+    return `<article class="order-card ${urgency(order.created_at)}" data-key="o${order.id}"><div class="card-top"><span class="order-number">${esc(order.public_number)}</span>${ageLabel(order.created_at)}</div><p class="guest">${esc(order.guest)}</p>${order.status_automatically ? '<p class="auto-deadline">Расчётный этап · сотрудник ещё не подтвердил</p>' : ''}<ul class="items">${order.items.map(item => `<li><b>${item.quantity} × ${esc(item.name)}</b>${item.modifiers.length ? `<div class="modifiers">${item.modifiers.map(esc).join(' · ')}</div>` : ''}</li>`).join('')}</ul>${order.comment ? `<p class="order-comment">${esc(order.comment)}</p>` : ''}${progress}<div class="card-actions"><button class="primary" data-id="${order.id}" data-action="${target}" data-version="${order.version}">${label}${icon('arrow')}</button>${order.status !== 'ready' ? `<button class="cancel" data-id="${order.id}" data-action="cancelled" data-version="${order.version}" aria-label="Отменить заказ ${esc(order.public_number)}">Отменить</button>` : ''}</div></article>`;
+  }
+  function tickProgress() {
+    document.querySelectorAll('.order-progress').forEach(progress => {
+      const start = Panel.isoDate(progress.dataset.progressStart).getTime();
+      const end = Panel.isoDate(progress.dataset.progressEnd).getTime();
+      const remaining = Math.max(0, Math.ceil((end - Date.now()) / 1000));
+      const fraction = Math.max(0, Math.min(1, (Date.now() - start) / Math.max(1, end - start)));
+      const percent = Math.round(fraction * 100);
+      progress.querySelector('[data-progress-fill]').style.width = `${percent}%`;
+      progress.querySelector('[role="progressbar"]').setAttribute('aria-valuenow', String(percent));
+      progress.querySelector('[data-progress-remaining]').textContent = remaining
+        ? `${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, '0')}`
+        : progress.dataset.progressStage === 'preparing' ? 'Ориентир прошёл' : 'Ожидает перехода';
+    });
   }
   function autoClosedCard(order) {
     return `<article class="prep-batch" data-key="o${order.id}"><strong>${esc(order.public_number)} · ${esc(order.guest)}</strong><span>${order.items.map(item => `${item.quantity} × ${esc(item.name)}`).join(' · ')}</span><button data-id="${order.id}" data-action="confirm-collection" data-version="${order.version}">Подтвердить выдачу</button></article>`;
@@ -66,7 +82,7 @@
     const special = data.special_requests || [];
     $('#special-zone').hidden = !special.length; $('#special-count').textContent = special.length;
     reconcile($('#special-list'),special,specialCard);
-    lockActions(); $('#board').setAttribute('aria-busy','false');
+    tickProgress(); lockActions(); $('#board').setAttribute('aria-busy','false');
   }
   function lockActions() { document.querySelectorAll('[data-action]').forEach(button => button.disabled = !online || pending); }
   function play() {
@@ -106,5 +122,6 @@
   document.querySelectorAll('[data-filter]').forEach(button => button.addEventListener('click', () => {filter=button.dataset.filter; document.querySelectorAll('[data-filter]').forEach(item => item.setAttribute('aria-pressed', String(item === button)));render();}));
   $('#sound-toggle').addEventListener('click',async () => {try {audio ||= new (window.AudioContext || window.webkitAudioContext)(); await audio.resume(); sound = !sound; $('#sound-toggle').setAttribute('aria-pressed',String(sound)); $('#sound-toggle span').textContent = sound ? 'Звук включён' : 'Включить звук'; if(sound) play();} catch {notify('Браузер не разрешил звук. Очередь продолжает обновляться.',true);}});
   $('#refresh').addEventListener('click',load);
+  setInterval(tickProgress, 1000);
   Panel.start(load);
 })();

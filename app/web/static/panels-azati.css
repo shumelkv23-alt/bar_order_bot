@@ -96,6 +96,12 @@ button.primary:hover, .button-link.primary:hover { background: var(--blue-hover)
 .prep-batch span { color: var(--muted); font-size: 12px; }
 .prep-batch p { margin: 4px 0 0; color: var(--blue); font-weight: 700; }
 .auto-deadline { margin: 0 0 12px; color: var(--muted); font-size: 11px; }
+.order-progress { margin: 0 0 14px; }
+.order-progress-heading { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 6px; color: var(--muted); font-size: 11px; line-height: 1.35; }
+.order-progress-heading time { flex: none; color: var(--blue); font-variant-numeric: tabular-nums; font-weight: 700; }
+.order-progress-track { height: 7px; overflow: hidden; border-radius: 999px; background: #e5eceb; }
+.order-progress-track span { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--orange); transition: width .8s linear; }
+.order-progress[data-progress-stage=preparing] .order-progress-track span { background: var(--blue); }
 .metric strong, .rank-row strong { color: var(--blue); }
 .page-footer { border-top: 1px solid var(--border); margin-top: 32px; padding-top: 16px; }
 

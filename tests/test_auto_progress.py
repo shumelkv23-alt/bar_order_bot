@@ -1,3 +1,4 @@
+import asyncio
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -11,14 +12,17 @@ from app.models import Order, utc_now
 from app.services.auto_progress import process_due_orders
 from app.services.auto_progress_policy import stage_delay
 from app.services.orders import (
+    ConflictError,
     add_to_cart,
     analytics_summary,
     confirm_auto_closed_order,
     get_active_event,
     list_event_menu,
     list_staff_orders,
+    order_to_dict,
     prep_batches,
     submit_cart,
+    transition_order,
     upsert_user,
 )
 from app.services.seed import seed_demo_data
@@ -100,12 +104,7 @@ async def test_due_order_advances_once_per_poll_and_closes_without_claiming_coll
         delete_message=AsyncMock(),
         edit_message_text=AsyncMock(),
     )
-    for expected in (
-        OrderStatus.ACCEPTED,
-        OrderStatus.PREPARING,
-        OrderStatus.READY,
-        OrderStatus.COMPLETED,
-    ):
+    for expected in (OrderStatus.ACCEPTED, OrderStatus.PREPARING):
         now = utc_now()
         async with factory() as session:
             order = await session.get(Order, order_id)
@@ -116,13 +115,34 @@ async def test_due_order_advances_once_per_poll_and_closes_without_claiming_coll
             order = await session.get(Order, order_id)
             assert order.status == expected.value
             assert order.status_automatically is True
-            assert order.completed_automatically is (expected == OrderStatus.COMPLETED)
-            assert (order.next_transition_at is None) is (expected == OrderStatus.COMPLETED)
+            assert order.completed_automatically is False
+            view = order_to_dict(order)
+            assert view["progress_started_at"] is not None
+            assert view["progress_started_at"] < view["next_transition_at"]
         assert await process_due_orders(factory, bot, now=now) == 0
-    assert bot.send_message.await_count == 4
+    now = utc_now()
+    async with factory() as session:
+        order = await session.get(Order, order_id)
+        order.next_transition_at = now - timedelta(seconds=1)
+        await session.commit()
+    assert await process_due_orders(factory, bot, now=now) == 0
+    async with factory() as session:
+        order = await session.get(Order, order_id)
+        assert order.status == OrderStatus.PREPARING.value
+        ready = await transition_order(
+            session, order_id, OrderStatus.READY, actor="bartender", expected_version=order.version
+        )
+        assert ready.status_automatically is False
+        ready.next_transition_at = utc_now() - timedelta(seconds=1)
+        await session.commit()
+    assert await process_due_orders(factory, bot, now=utc_now()) == 1
+    assert bot.send_message.await_count == 3
     assert "автоматически переведён" in bot.send_message.await_args_list[0].args[1]
     assert "расчётному этапу" in bot.send_message.await_args_list[1].args[1]
-    assert "Уточните у бармена" in bot.send_message.await_args_list[2].args[1]
+    assert all(
+        "Покажите этот номер" not in call.args[1]
+        for call in bot.send_message.await_args_list
+    )
     assert "закрыт по таймеру" in bot.send_message.await_args.args[1]
     async with factory() as session:
         order = await session.get(Order, order_id)
@@ -162,3 +182,19 @@ async def test_existing_order_without_deadline_is_scheduled_from_now(order_db):
         order = await session.get(Order, order_id)
         assert order.next_transition_at is not None
         assert order.next_transition_at.replace(tzinfo=now.tzinfo) > now
+
+
+async def test_simultaneous_sqlite_status_changes_reject_stale_version(order_db):
+    factory, order_id = order_db
+    async with factory() as first, factory() as second:
+        outcomes = await asyncio.gather(
+            transition_order(
+                first, order_id, OrderStatus.ACCEPTED, actor="bartender", expected_version=1
+            ),
+            transition_order(
+                second, order_id, OrderStatus.ACCEPTED, actor="bartender", expected_version=1
+            ),
+            return_exceptions=True,
+        )
+    assert sum(isinstance(result, Order) for result in outcomes) == 1
+    assert sum(isinstance(result, ConflictError) for result in outcomes) == 1
