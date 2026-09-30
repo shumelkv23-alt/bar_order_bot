@@ -108,6 +108,14 @@ SPECIAL_REQUEST_TRANSITIONS = {
 }
 
 
+def _special_request_lock_statement(request_id: int):
+    return (
+        select(SpecialRequest)
+        .where(SpecialRequest.id == request_id)
+        .with_for_update(of=SpecialRequest)
+    )
+
+
 def special_request_to_dict(request: SpecialRequest, language: str = "ru") -> dict[str, Any]:
     suggested_name = None
     if request.suggested_menu_item:
@@ -213,9 +221,7 @@ async def transition_special_request(
     actor: str,
     note: str = "",
 ) -> SpecialRequest:
-    request = await session.scalar(
-        select(SpecialRequest).where(SpecialRequest.id == request_id).with_for_update()
-    )
+    request = await session.scalar(_special_request_lock_statement(request_id))
     if not request:
         raise NotFoundError("Особый запрос не найден")
     current = SpecialRequestStatus(request.status)
